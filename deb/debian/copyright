@@ -1,0 +1,12 @@
+Format: https://www.debian.org/doc/packaging-manuals/copyright-format/1.0/
+Upstream-Name: kio-adb
+Source: https://github.com/deje07/kio-adb
+
+Files: *
+Copyright: 2026 Gabor Szecsi
+License: LGPL-2.0-or-later
+ This software is licensed under the GNU Library General Public License,
+ version 2 or, at your option, any later version.
+ .
+ On Debian and Ubuntu systems, the full text of version 2 is available
+ in /usr/share/common-licenses/LGPL-2.

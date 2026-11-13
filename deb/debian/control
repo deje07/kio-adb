@@ -1,0 +1,19 @@
+Source: kio-adb
+Section: kde
+Priority: optional
+Maintainer: Gabor Szecsi <deje07@gmail.com>
+Build-Depends: debhelper-compat (= 13),
+               cmake (>= 3.22),
+               extra-cmake-modules (>= 6.0),
+               libkf6kio-dev (>= 6.0),
+               qt6-base-dev
+Rules-Requires-Root: no
+Homepage: https://github.com/deje07/kio-adb
+
+Package: kio-adb
+Architecture: any
+Depends: adb, ${misc:Depends}, ${shlibs:Depends}
+Enhances: dolphin
+Description: KDE KIO worker for Android devices over ADB
+ Browse and transfer files on an Android device from Dolphin or another
+ KDE Frameworks 6 application using the adb: URL scheme.
