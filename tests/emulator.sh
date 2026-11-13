@@ -72,7 +72,7 @@ while (( SECONDS < deadline )); do
         action=$3
         fixture="$scratch/fixture.txt"
         name="kio-adb-$action-${scratch##*.}"
-        if [[ $action != mkdir && $action != list-directory ]]; then
+        if [[ $action != mkdir && $action != rmdir && $action != list-directory ]]; then
             name+=.txt
         fi
         if [[ $action == upload-space ]]; then
@@ -84,8 +84,10 @@ while (( SECONDS < deadline )); do
         if [[ $action == download || $action == list ]]; then
             timeout 15 "$adb" push "$fixture" "$remote"
         fi
-        if [[ $action == list-directory ]]; then
+        if [[ $action == list-directory || $action == rmdir ]]; then
             timeout 15 "$adb" shell -T "mkdir '$remote'"
+        fi
+        if [[ $action == list-directory ]]; then
             timeout 15 "$adb" shell -T "printf '%s' 'alpha' > '$remote/alpha.txt' &&
                 printf '%s' 'two words!' > '$remote/two words.txt' &&
                 : > '$remote/empty.txt' &&
@@ -93,6 +95,12 @@ while (( SECONDS < deadline )); do
         fi
         timeout 60 "$1" "$action" "$name" "$fixture" "$scratch/downloaded.txt"
         case "$action" in
+            rmdir)
+                if ! timeout 15 "$adb" shell -T "test ! -e '$remote' && test ! -L '$remote'"; then
+                    echo "ADB could not verify deletion of $remote." >&2
+                    exit 1
+                fi
+                ;;
             mkdir)
                 if ! timeout 15 "$adb" shell -T "test -d '$remote'"; then
                     echo "ADB could not find the directory at $remote." >&2

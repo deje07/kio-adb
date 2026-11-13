@@ -1,4 +1,5 @@
 #include <KIO/CopyJob>
+#include <KIO/SimpleJob>
 #include <KIO/ListJob>
 #include <KIO/MkdirJob>
 
@@ -32,6 +33,14 @@ int main(int argc, char **argv)
     }
     if (action == "upload" || action == "upload-space") {
         return copy(QUrl::fromLocalFile(arguments[3]), remote);
+    }
+    if (action == "rmdir") {
+        auto *job = KIO::rmdir(remote);
+        if (!job->exec()) {
+            qCritical() << "Directory deletion failed:" << remote << job->errorString();
+            return 1;
+        }
+        return 0;
     }
     if (action == "mkdir") {
         auto *job = KIO::mkdir(remote);

@@ -2,6 +2,12 @@
 
 Browse and transfer files on an Android device from Dolphin and other KDE applications. The worker uses the Android shell user's filesystem permissions.
 
+## Features
+
+- Browse directories and inspect file metadata, including size, permissions, and modification time.
+- Download files and upload directly to the device with overwrite support.
+- Create directories, rename or move files and directories, and permanently delete files and empty directories.
+
 ## Build on Ubuntu 26.04 LTS
 
 ```sh
@@ -19,7 +25,7 @@ Restart Dolphin after installing the worker.
 2. Run `adb devices` and check that the phone appears with status `device`. Use one device at a time, or set `ANDROID_SERIAL` in the environment of the KDE application before launching it.
 3. Enter `adb:/sdcard/` in Dolphin for shared storage or `adb:/` for the device root.
 
-Copy files between Dolphin windows to download or upload them. You can also create folders, rename or move items within the device, and permanently delete files and empty folders. For deletions, use Dolphin's **Delete** action.
+Copy files between Dolphin windows to download or upload them. For deletions, use Dolphin's **Delete** action.
 
 Uploads use a local temporary file, then push directly to the requested Android path. An interrupted push can leave a partial destination file. Upload resume is unsupported. The device needs a modern Android shell with Toybox utilities including `stat` and `mv -T`.
 
@@ -35,7 +41,7 @@ Install the Android Emulator and Platform-Tools in the SDK, and create an Androi
 cmake -S . -B build -DKIO_ADB_EMULATOR_TEST=ON
 cmake --build build --parallel
 ANDROID_SDK=/path/to/sdk KIO_ADB_TEST_AVD=test-avd \
-    ctest --test-dir build --output-on-failure -R '^adb-emulator-(download|upload|upload-space|list|list-directory|mkdir)$'
+    ctest --test-dir build --output-on-failure -R '^adb-emulator-(download|upload|upload-space|list|list-directory|mkdir|rmdir)$'
 ```
 
 Each test erases the selected AVD’s internal user data with `-wipe-data`, boots headlessly, and waits for a direct ADB write and read-back in shared storage. The download and listing tests seed their own files with ADB. The directory listing test checks the exact filenames in any order and compares file sizes when reported. The upload tests read the KIO-uploaded file back with ADB, including a case with spaces in the filename. The transfer tests compare bytes with the local fixture. The mkdir test creates a directory through KIO, checks the duplicate-directory error, and verifies the directory with ADB.
