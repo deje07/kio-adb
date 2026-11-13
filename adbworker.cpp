@@ -4,15 +4,17 @@
 
 #include <QCoreApplication>
 #include <QDateTime>
+#include <QLoggingCategory>
 #include <QMimeDatabase>
 #include <QProcess>
-#include <QScopeGuard>
 #include <QTemporaryFile>
 #include <QUrl>
 
 #include <sys/stat.h>
 
 using KIO::WorkerResult;
+
+Q_LOGGING_CATEGORY(adbLog, "kf.kio.workers.adb", QtWarningMsg)
 
 namespace
 {
@@ -37,11 +39,6 @@ QString remotePath(const QUrl &url)
         path.chop(1);
     }
     return path;
-}
-
-QString childPath(const QString &parent, const QString &name)
-{
-    return parent.endsWith('/') ? parent + name : parent + '/' + name;
 }
 
 struct AdbResult {
@@ -75,10 +72,12 @@ AdbResult adb(QStringList arguments, const QString &serial = {})
         arguments.prepend(serial);
         arguments.prepend("-s");
     }
+    qCDebug(adbLog) << "Running adb" << arguments;
     QProcess process;
     process.setStandardInputFile(QProcess::nullDevice());
     process.start("adb", arguments);
     if (!process.waitForStarted(adbTimeout)) {
+        qCDebug(adbLog) << "Could not start adb:" << process.errorString();
         return {false, {}, process.errorString()};
     }
 
@@ -87,12 +86,16 @@ AdbResult adb(QStringList arguments, const QString &serial = {})
         if (!process.waitForReadyRead(adbTimeout) && process.state() != QProcess::NotRunning) {
             process.kill();
             process.waitForFinished();
+            qCDebug(adbLog) << "ADB command timed out:" << arguments;
             return {false, {}, "ADB command timed out"};
         }
     }
     const bool ok = succeeded(process);
     const int exitCode = process.exitStatus() == QProcess::NormalExit ? process.exitCode() : -1;
-    return {ok, process.readAllStandardOutput(), ok || exitCode == 17 ? QString() : processError(process), exitCode};
+    const auto output = process.readAllStandardOutput();
+    const auto error = ok || exitCode == 17 ? QString() : processError(process);
+    qCDebug(adbLog) << "ADB finished:" << exitCode << "stdout bytes:" << output.size() << error;
+    return {ok, output, error, exitCode};
 }
 
 AdbResult shell(const QString &command, const QString &serial = {})
@@ -102,6 +105,7 @@ AdbResult shell(const QString &command, const QString &serial = {})
 
 WorkerResult failure(int code, const QString &path, const QString &detail = {})
 {
+    qCDebug(adbLog) << "Request failed:" << code << path << detail;
     return WorkerResult::fail(code, detail.isEmpty() ? path : path + '\n' + detail);
 }
 
@@ -140,6 +144,7 @@ public:
 
     WorkerResult listDir(const QUrl &url) override
     {
+        qCDebug(adbLog) << "listDir" << url.path();
         if (url.path().isEmpty() && url.authority().isEmpty()) {
             QUrl root = url;
             root.setPath("/");
@@ -177,6 +182,7 @@ public:
 
     WorkerResult stat(const QUrl &url) override
     {
+        qCDebug(adbLog) << "stat" << url.path();
         const QString path = remotePath(url);
         if (path.isEmpty()) {
             return failure(KIO::ERR_MALFORMED_URL, url.toDisplayString());
@@ -193,6 +199,7 @@ public:
 
     WorkerResult get(const QUrl &url) override
     {
+        qCDebug(adbLog) << "get" << url.path();
         const QString path = remotePath(url);
         if (path.isEmpty()) {
             return failure(KIO::ERR_MALFORMED_URL, url.toDisplayString());
@@ -234,11 +241,13 @@ public:
             mimeType(QMimeDatabase().mimeTypeForFile(path, QMimeDatabase::MatchExtension).name());
         }
         data({});
+        qCDebug(adbLog) << "Download complete:" << path << received << "bytes";
         return WorkerResult::pass();
     }
 
     WorkerResult put(const QUrl &url, int permissions, KIO::JobFlags flags) override
     {
+        qCDebug(adbLog) << "put" << url.path();
         const QString path = remotePath(url);
         if (path.isEmpty() || path == "/") {
             return failure(KIO::ERR_MALFORMED_URL, url.toDisplayString());
@@ -278,48 +287,38 @@ public:
         }
         local.close();
 
-        const QString parent = path.left(path.lastIndexOf('/') + 1);
-        const auto staging = shell("mktemp -d " + quote(parent + ".kio-adb-XXXXXXXX"), serial);
-        if (!staging.ok) {
-            return failure(KIO::ERR_CANNOT_WRITE, path, staging.error);
+        const auto destination = shell(
+            "if [ -L " + target + " ] || { [ -e " + target + " ] && [ ! -f " + target + " ]; }; then exit 18; fi; "
+            "if [ -f " + target + " ]; then stat -c '%a' " + target + "; fi", serial);
+        if (!destination.ok) {
+            return failure(KIO::ERR_CANNOT_WRITE, path, destination.error);
         }
-        QByteArray directoryOutput = staging.output;
-        directoryOutput.chop(1); // mktemp appends a newline.
-        const QString directory = QString::fromUtf8(directoryOutput);
-        const QString prefix = parent + ".kio-adb-";
-        if (!staging.output.endsWith('\n') || !directory.startsWith(prefix)
-            || directory.size() != prefix.size() + 8 || directory.mid(prefix.size()).contains('/')) {
-            return failure(KIO::ERR_CANNOT_WRITE, path, "Invalid ADB staging directory");
+        if (!destination.output.isEmpty() && !overwrite) {
+            return failure(KIO::ERR_FILE_ALREADY_EXIST, path);
         }
-        const auto cleanup = qScopeGuard([&] {
-            shell("rm -f " + quote(childPath(directory, "upload")) + "; rmdir " + quote(directory), serial);
-        });
-        const QString temporary = childPath(directory, "upload");
-        const auto pushed = adb({"push", local.fileName(), temporary}, serial);
+
+        qCDebug(adbLog) << "Uploading" << local.size() << "bytes to" << path << "on" << serial;
+        const auto pushed = adb({"push", local.fileName(), path}, serial);
         if (!pushed.ok) {
             return failure(KIO::ERR_CANNOT_WRITE, path, pushed.error);
         }
 
-        const QString source = quote(temporary);
-        QString prepare;
-        if (exists.ok) {
-            prepare = "if [ -f " + target + " ] && [ ! -L " + target + " ]; then "
-                "mode=$(stat -c '%a' " + target + ") && chmod \"$mode\" " + source + " || exit 1; fi; ";
-        } else {
-            const int mode = permissions < 0 ? 0644 : permissions & 0777;
-            prepare = "chmod " + QString::number(mode, 8) + ' ' + source + " || exit 1; ";
-        }
+        bool modeOk = false;
+        const int existingMode = destination.output.trimmed().toInt(&modeOk, 8);
+        const int mode = modeOk ? existingMode : permissions;
         const auto modified = QDateTime::fromString(metaData("modified"), Qt::ISODate);
-        if (modified.isValid()) {
-            prepare += "touch -m -d @" + QString::number(modified.toSecsSinceEpoch()) + ' ' + source + " || exit 1; ";
+        if (mode >= 0) {
+            shell("chmod " + QString::number(mode & 0777, 8) + ' ' + target, serial);
         }
-
-        const auto moved = shell(prepare + moveCommand(source, target, overwrite), serial);
-        return moveResult(moved, path, KIO::ERR_CANNOT_WRITE);
+        if (modified.isValid()) {
+            shell("touch -m -d @" + QString::number(modified.toSecsSinceEpoch()) + ' ' + target, serial);
+        }
+        return WorkerResult::pass();
     }
 
     WorkerResult mkdir(const QUrl &url, int permissions) override
     {
+        qCDebug(adbLog) << "mkdir" << url.path();
         const QString path = remotePath(url);
         if (path.isEmpty()) {
             return failure(KIO::ERR_MALFORMED_URL, url.toDisplayString());
@@ -332,6 +331,7 @@ public:
 
     WorkerResult rename(const QUrl &from, const QUrl &to, KIO::JobFlags flags) override
     {
+        qCDebug(adbLog) << "rename" << from.path() << "to" << to.path();
         const QString source = remotePath(from);
         const QString target = remotePath(to);
         if (source.isEmpty() || target.isEmpty() || source == "/" || target == "/") {
@@ -343,6 +343,7 @@ public:
 
     WorkerResult del(const QUrl &url, bool isFile) override
     {
+        qCDebug(adbLog) << "del" << url.path();
         const QString path = remotePath(url);
         if (path.isEmpty() || path == "/") {
             return failure(KIO::ERR_MALFORMED_URL, url.toDisplayString());

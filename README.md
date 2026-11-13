@@ -21,8 +21,23 @@ Restart Dolphin after installing the worker.
 
 Copy files between Dolphin windows to download or upload them. You can also create folders, rename or move items within the device, and permanently delete files and empty folders. For deletions, use Dolphin's **Delete** action.
 
-Uploads use a local temporary file and stage a copy in the destination directory before publishing it. This requires space for the staged file on both systems. Upload resume is unsupported. The device needs a modern Android shell with Toybox utilities including `stat`, `mktemp`, and `mv -T`.
+Uploads use a local temporary file, then push directly to the requested Android path. An interrupted push can leave a partial destination file. Upload resume is unsupported. The device needs a modern Android shell with Toybox utilities including `stat` and `mv -T`.
 
 ## Smoke test
 
 Create a folder under `adb:/sdcard/Download/`. Copy a nonempty file and a zero-byte file into it, then copy both back to a different local folder and compare them with the originals. Repeat an upload to exercise the overwrite prompt. Rename the uploaded files, delete them, then delete the empty test folder.
+
+## Automated emulator test
+
+Install the Android Emulator and Platform-Tools in the SDK, and create an Android Virtual Device (AVD). With a single installed AVD, omit `KIO_ADB_TEST_AVD`.
+
+```sh
+cmake -S . -B build -DKIO_ADB_EMULATOR_TEST=ON
+cmake --build build --parallel
+ANDROID_SDK=/path/to/sdk KIO_ADB_TEST_AVD=test-avd \
+    ctest --test-dir build --output-on-failure -R '^adb-emulator-(download|upload|list)$'
+```
+
+Each test erases the selected AVD’s internal user data with `-wipe-data`, boots headlessly, and waits for a direct ADB write and read-back in shared storage. The download and list tests seed their own files with ADB. The upload test reads the KIO-uploaded file back with ADB. Both transfer tests compare bytes with the local fixture.
+
+Each test shuts down its emulator on exit. Set `KIO_ADB_TEST_PORT` to a free even console port if the default of 5580 is occupied. The emulator also needs the next port for ADB.
