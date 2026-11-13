@@ -1,0 +1,17 @@
+{
+    "KDE-KIO-Protocols": {
+        "adb": {
+            "Class": ":local",
+            "Icon": "phone",
+            "protocol": "adb",
+            "input": "none",
+            "output": "filesystem",
+            "listing": ["Name", "Type", "Size", "Date", "Access"],
+            "reading": true,
+            "writing": true,
+            "makedir": true,
+            "deleting": true,
+            "moving": true
+        }
+    }
+}

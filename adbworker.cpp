@@ -1,0 +1,394 @@
+#include <KIO/Global>
+#include <KIO/UDSEntry>
+#include <KIO/WorkerBase>
+
+#include <QCoreApplication>
+#include <QDateTime>
+#include <QMimeDatabase>
+#include <QProcess>
+#include <QScopeGuard>
+#include <QTemporaryFile>
+#include <QUrl>
+
+#include <sys/stat.h>
+
+using KIO::WorkerResult;
+
+namespace
+{
+constexpr int adbTimeout = 30000;
+
+QString quote(QString value)
+{
+    value.replace("'", "'\\''");
+    return "'" + value + "'";
+}
+
+QString remotePath(const QUrl &url)
+{
+    QString path = url.path(QUrl::FullyDecoded);
+    if (path.isEmpty()) {
+        path = "/";
+    }
+    if (url.scheme() != "adb" || !url.authority().isEmpty() || !path.startsWith('/') || path.contains(QChar::Null)) {
+        return {};
+    }
+    while (path.size() > 1 && path.endsWith('/')) {
+        path.chop(1);
+    }
+    return path;
+}
+
+QString childPath(const QString &parent, const QString &name)
+{
+    return parent.endsWith('/') ? parent + name : parent + '/' + name;
+}
+
+struct AdbResult {
+    bool ok;
+    QByteArray output;
+    QString error;
+    int exitCode = -1;
+};
+
+bool succeeded(const QProcess &process)
+{
+    return process.error() != QProcess::FailedToStart
+        && process.exitStatus() == QProcess::NormalExit && process.exitCode() == 0;
+}
+
+QString processError(QProcess &process)
+{
+    const QString message = QString::fromUtf8(process.readAllStandardError()).trimmed();
+    if (!message.isEmpty()) {
+        return message;
+    }
+    if (process.exitStatus() == QProcess::NormalExit && process.exitCode() != 0) {
+        return QStringLiteral("ADB exited with status %1").arg(process.exitCode());
+    }
+    return process.errorString();
+}
+
+AdbResult adb(QStringList arguments, const QString &serial = {})
+{
+    if (!serial.isEmpty()) {
+        arguments.prepend(serial);
+        arguments.prepend("-s");
+    }
+    QProcess process;
+    process.setStandardInputFile(QProcess::nullDevice());
+    process.start("adb", arguments);
+    if (!process.waitForStarted(adbTimeout)) {
+        return {false, {}, process.errorString()};
+    }
+
+    // A push can run for much longer than the timeout while it keeps reporting progress.
+    while (process.state() != QProcess::NotRunning) {
+        if (!process.waitForReadyRead(adbTimeout) && process.state() != QProcess::NotRunning) {
+            process.kill();
+            process.waitForFinished();
+            return {false, {}, "ADB command timed out"};
+        }
+    }
+    const bool ok = succeeded(process);
+    const int exitCode = process.exitStatus() == QProcess::NormalExit ? process.exitCode() : -1;
+    return {ok, process.readAllStandardOutput(), ok || exitCode == 17 ? QString() : processError(process), exitCode};
+}
+
+AdbResult shell(const QString &command, const QString &serial = {})
+{
+    return adb({"shell", "-T", command}, serial);
+}
+
+WorkerResult failure(int code, const QString &path, const QString &detail = {})
+{
+    return WorkerResult::fail(code, detail.isEmpty() ? path : path + '\n' + detail);
+}
+
+bool parseEntry(const QByteArray &metadata, const QString &name, KIO::UDSEntry &entry)
+{
+    const auto fields = metadata.trimmed().split(' ');
+    if (fields.size() != 3) {
+        return false;
+    }
+    bool modeOk, sizeOk, timeOk;
+    const uint mode = fields[0].toUInt(&modeOk, 16);
+    const auto size = fields[1].toLongLong(&sizeOk);
+    const auto modified = fields[2].toLongLong(&timeOk);
+    if (!modeOk || !sizeOk || !timeOk) {
+        return false;
+    }
+    entry.fastInsert(KIO::UDSEntry::UDS_NAME, name);
+    entry.fastInsert(KIO::UDSEntry::UDS_FILE_TYPE, mode & S_IFMT);
+    entry.fastInsert(KIO::UDSEntry::UDS_ACCESS, mode & 0777);
+    entry.fastInsert(KIO::UDSEntry::UDS_SIZE, size);
+    entry.fastInsert(KIO::UDSEntry::UDS_MODIFICATION_TIME, modified);
+    return true;
+}
+
+// Follow links when possible so Android's shared storage aliases can be browsed.
+const QString statCommand = "stat -L -c '%f %s %Y' ";
+const QString lstatCommand = "stat -c '%f %s %Y' ";
+
+class AdbWorker final : public KIO::WorkerBase
+{
+public:
+    AdbWorker(const QByteArray &pool, const QByteArray &app)
+        : WorkerBase("adb", pool, app)
+    {
+    }
+
+    WorkerResult listDir(const QUrl &url) override
+    {
+        if (url.path().isEmpty() && url.authority().isEmpty()) {
+            QUrl root = url;
+            root.setPath("/");
+            redirection(root);
+            return WorkerResult::pass();
+        }
+        const QString path = remotePath(url);
+        if (path.isEmpty()) {
+            return failure(KIO::ERR_MALFORMED_URL, url.toDisplayString());
+        }
+
+        // NUL-delimited names allow whitespace and newlines in filenames.
+        const auto result = shell("cd " + quote(path) + " && "
+            "test -r . && test -x . && "
+            "for file in . ./* ./.[!.]* ./..?*; do "
+            "metadata=$(" + statCommand + "\"$file\" 2>/dev/null || "
+            + lstatCommand + "\"$file\" 2>/dev/null) || continue; "
+            "printf '%s\\000%s\\000' \"${file#./}\" \"$metadata\"; done");
+        if (!result.ok) {
+            return failure(KIO::ERR_CANNOT_ENTER_DIRECTORY, path, result.error);
+        }
+        const auto records = result.output.split('\0');
+        if (records.size() % 2 != 1 || !records.last().isEmpty()) {
+            return failure(KIO::ERR_CANNOT_ENTER_DIRECTORY, path, "Invalid ADB directory listing");
+        }
+        for (qsizetype index = 0; index + 1 < records.size(); index += 2) {
+            const QString name = QString::fromUtf8(records[index]);
+            KIO::UDSEntry entry;
+            if (name.toUtf8() == records[index] && parseEntry(records[index + 1], name, entry)) {
+                listEntry(entry);
+            }
+        }
+        return WorkerResult::pass();
+    }
+
+    WorkerResult stat(const QUrl &url) override
+    {
+        const QString path = remotePath(url);
+        if (path.isEmpty()) {
+            return failure(KIO::ERR_MALFORMED_URL, url.toDisplayString());
+        }
+        const QString argument = quote(path);
+        const auto result = shell(statCommand + argument + " 2>/dev/null || " + lstatCommand + argument);
+        KIO::UDSEntry entry;
+        if (!result.ok || !parseEntry(result.output, path == "/" ? "." : path.section('/', -1), entry)) {
+            return failure(KIO::ERR_DOES_NOT_EXIST, path, result.error);
+        }
+        statEntry(entry);
+        return WorkerResult::pass();
+    }
+
+    WorkerResult get(const QUrl &url) override
+    {
+        const QString path = remotePath(url);
+        if (path.isEmpty()) {
+            return failure(KIO::ERR_MALFORMED_URL, url.toDisplayString());
+        }
+        const QString argument = quote(path);
+        QProcess process;
+        process.setStandardInputFile(QProcess::nullDevice());
+        process.start("adb", {"shell", "-T", "test -f " + argument + " && cat " + argument});
+        if (!process.waitForStarted(adbTimeout)) {
+            return failure(KIO::ERR_CANNOT_READ, path, process.errorString());
+        }
+
+        bool sentMimeType = false;
+        KIO::filesize_t received = 0;
+        while (true) {
+            while (process.bytesAvailable() > 0) {
+                const QByteArray chunk = process.read(64 * 1024);
+                if (!sentMimeType) {
+                    mimeType(QMimeDatabase().mimeTypeForFileNameAndData(path, chunk).name());
+                    sentMimeType = true;
+                }
+                data(chunk);
+                received += chunk.size();
+                processedSize(received);
+            }
+            if (process.state() == QProcess::NotRunning) {
+                break;
+            }
+            if (!process.waitForReadyRead(adbTimeout) && process.state() != QProcess::NotRunning) {
+                process.kill();
+                process.waitForFinished();
+                return failure(KIO::ERR_CANNOT_READ, path, "ADB download timed out");
+            }
+        }
+        if (!succeeded(process)) {
+            return failure(KIO::ERR_CANNOT_READ, path, processError(process));
+        }
+        if (!sentMimeType) {
+            mimeType(QMimeDatabase().mimeTypeForFile(path, QMimeDatabase::MatchExtension).name());
+        }
+        data({});
+        return WorkerResult::pass();
+    }
+
+    WorkerResult put(const QUrl &url, int permissions, KIO::JobFlags flags) override
+    {
+        const QString path = remotePath(url);
+        if (path.isEmpty() || path == "/") {
+            return failure(KIO::ERR_MALFORMED_URL, url.toDisplayString());
+        }
+        if (flags & KIO::Resume) {
+            return failure(KIO::ERR_UNSUPPORTED_ACTION, path);
+        }
+        const auto device = adb({"get-serialno"});
+        const QString serial = QString::fromUtf8(device.output).trimmed();
+        if (!device.ok || serial.isEmpty() || serial == "unknown") {
+            return failure(KIO::ERR_CANNOT_CONNECT, path, device.error);
+        }
+        const QString target = quote(path);
+        const auto exists = shell("test -e " + target + " || test -L " + target, serial);
+        const bool overwrite = flags.testFlag(KIO::Overwrite);
+        if (exists.ok && !overwrite) {
+            return failure(KIO::ERR_FILE_ALREADY_EXIST, path);
+        }
+
+        QTemporaryFile local;
+        if (!local.open()) {
+            return failure(KIO::ERR_CANNOT_WRITE, path, local.errorString());
+        }
+        while (true) {
+            QByteArray chunk;
+            dataReq();
+            const auto count = readData(chunk);
+            if (count < 0 || local.write(chunk) != count) {
+                return failure(KIO::ERR_CANNOT_WRITE, path, local.errorString());
+            }
+            if (count == 0) {
+                break;
+            }
+        }
+        if (!local.flush()) {
+            return failure(KIO::ERR_CANNOT_WRITE, path, local.errorString());
+        }
+        local.close();
+
+        const QString parent = path.left(path.lastIndexOf('/') + 1);
+        const auto staging = shell("mktemp -d " + quote(parent + ".kio-adb-XXXXXXXX"), serial);
+        if (!staging.ok) {
+            return failure(KIO::ERR_CANNOT_WRITE, path, staging.error);
+        }
+        QByteArray directoryOutput = staging.output;
+        directoryOutput.chop(1); // mktemp appends a newline.
+        const QString directory = QString::fromUtf8(directoryOutput);
+        const QString prefix = parent + ".kio-adb-";
+        if (!staging.output.endsWith('\n') || !directory.startsWith(prefix)
+            || directory.size() != prefix.size() + 8 || directory.mid(prefix.size()).contains('/')) {
+            return failure(KIO::ERR_CANNOT_WRITE, path, "Invalid ADB staging directory");
+        }
+        const auto cleanup = qScopeGuard([&] {
+            shell("rm -f " + quote(childPath(directory, "upload")) + "; rmdir " + quote(directory), serial);
+        });
+        const QString temporary = childPath(directory, "upload");
+        const auto pushed = adb({"push", local.fileName(), temporary}, serial);
+        if (!pushed.ok) {
+            return failure(KIO::ERR_CANNOT_WRITE, path, pushed.error);
+        }
+
+        const QString source = quote(temporary);
+        QString prepare;
+        if (exists.ok) {
+            prepare = "if [ -f " + target + " ] && [ ! -L " + target + " ]; then "
+                "mode=$(stat -c '%a' " + target + ") && chmod \"$mode\" " + source + " || exit 1; fi; ";
+        } else {
+            const int mode = permissions < 0 ? 0644 : permissions & 0777;
+            prepare = "chmod " + QString::number(mode, 8) + ' ' + source + " || exit 1; ";
+        }
+        const auto modified = QDateTime::fromString(metaData("modified"), Qt::ISODate);
+        if (modified.isValid()) {
+            prepare += "touch -m -d @" + QString::number(modified.toSecsSinceEpoch()) + ' ' + source + " || exit 1; ";
+        }
+
+        const auto moved = shell(prepare + moveCommand(source, target, overwrite), serial);
+        return moveResult(moved, path, KIO::ERR_CANNOT_WRITE);
+    }
+
+    WorkerResult mkdir(const QUrl &url, int permissions) override
+    {
+        const QString path = remotePath(url);
+        if (path.isEmpty()) {
+            return failure(KIO::ERR_MALFORMED_URL, url.toDisplayString());
+        }
+        const QString target = quote(path);
+        const QString mode = permissions < 0 ? QString() : "-m " + QString::number(permissions & 0777, 8) + ' ';
+        const auto result = shell("if [ -e " + target + " ] || [ -L " + target + " ]; then exit 17; fi; mkdir " + mode + target);
+        return moveResult(result, path, KIO::ERR_CANNOT_MKDIR);
+    }
+
+    WorkerResult rename(const QUrl &from, const QUrl &to, KIO::JobFlags flags) override
+    {
+        const QString source = remotePath(from);
+        const QString target = remotePath(to);
+        if (source.isEmpty() || target.isEmpty() || source == "/" || target == "/") {
+            return failure(KIO::ERR_MALFORMED_URL, from.toDisplayString());
+        }
+        const auto result = shell(moveCommand(quote(source), quote(target), flags.testFlag(KIO::Overwrite)));
+        return moveResult(result, target, KIO::ERR_CANNOT_RENAME);
+    }
+
+    WorkerResult del(const QUrl &url, bool isFile) override
+    {
+        const QString path = remotePath(url);
+        if (path.isEmpty() || path == "/") {
+            return failure(KIO::ERR_MALFORMED_URL, url.toDisplayString());
+        }
+        // A directory symlink can be advertised as a directory, but must be unlinked.
+        const QString target = quote(path);
+        const auto result = shell(isFile ? "rm " + target :
+            "if [ -L " + target + " ]; then rm " + target + "; else rmdir " + target + "; fi");
+        return result.ok ? WorkerResult::pass() : failure(KIO::ERR_CANNOT_DELETE, path, result.error);
+    }
+
+private:
+    static QString moveCommand(const QString &source, const QString &target, bool overwrite)
+    {
+        if (overwrite) {
+            return "mv -fT " + source + ' ' + target;
+        }
+        // Toybox mv -n can report success when it skips a collision.
+        return "if [ -e " + target + " ] || [ -L " + target + " ]; then exit 17; fi; "
+            "mv -nT " + source + ' ' + target + " && "
+            "if [ -e " + source + " ] || [ -L " + source + " ]; then exit 17; fi";
+    }
+
+    static WorkerResult moveResult(const AdbResult &result, const QString &path, int error)
+    {
+        return result.ok ? WorkerResult::pass()
+            : failure(result.exitCode == 17 ? KIO::ERR_FILE_ALREADY_EXIST : error, path, result.error);
+    }
+};
+
+class AdbPlugin : public QObject
+{
+    Q_OBJECT
+    Q_PLUGIN_METADATA(IID "org.kde.kio.worker.adb" FILE "adb.json")
+};
+}
+
+extern "C" Q_DECL_EXPORT int kdemain(int argc, char **argv)
+{
+    QCoreApplication application(argc, argv);
+    if (argc != 4) {
+        return 1;
+    }
+    AdbWorker worker(argv[2], argv[3]);
+    worker.dispatchLoop();
+    return 0;
+}
+
+#include "adbworker.moc"
