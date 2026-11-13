@@ -47,3 +47,7 @@ ANDROID_SDK=/path/to/sdk KIO_ADB_TEST_AVD=test-avd \
 Each test erases the selected AVD’s internal user data with `-wipe-data`, boots headlessly, and waits for a direct ADB write and read-back in shared storage. The download and listing tests seed their own files with ADB. The directory listing test checks the exact filenames in any order and compares file sizes when reported. The upload tests read the KIO-uploaded file back with ADB, including a case with spaces in the filename. The transfer tests compare bytes with the local fixture. The mkdir test creates a directory through KIO, checks the duplicate-directory error, and verifies the directory with ADB.
 
 Each test shuts down its emulator on exit. Set `KIO_ADB_TEST_PORT` to a free even console port if the default of 5580 is occupied. The emulator also needs the next port for ADB.
+
+## License
+
+LGPL-2.0-or-later. See [LICENSE](LICENSE).
