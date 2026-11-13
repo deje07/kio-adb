@@ -23,7 +23,7 @@ if(KIO_ADB_EMULATOR_TEST)
     add_executable(adb-test-action tests/actions.cpp)
     target_link_libraries(adb-test-action PRIVATE Qt6::Core KF6::KIOCore)
     add_dependencies(adb-test-action kio_adb)
-    foreach(action IN ITEMS download upload list mkdir)
+    foreach(action IN ITEMS download upload upload-space list list-directory mkdir)
         add_test(NAME adb-emulator-${action}
             COMMAND bash "${CMAKE_CURRENT_SOURCE_DIR}/tests/emulator.sh"
                 "$<TARGET_FILE:adb-test-action>" "$<TARGET_FILE_DIR:kio_adb>/../.." "${action}"

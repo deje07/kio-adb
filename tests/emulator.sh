@@ -50,7 +50,7 @@ cleanup() {
     if (( status != 0 )); then
         cat "$log" >&2
     fi
-    rm -f "$log" "$probe" "$scratch/probe.log" "$scratch/fixture.txt" "$scratch/downloaded.txt"
+    rm -f "$log" "$probe" "$scratch/probe.log" "$scratch/fixture.txt" "$scratch/source file.txt" "$scratch/downloaded.txt"
     rmdir "$scratch"
     exit "$status"
 }
@@ -72,13 +72,24 @@ while (( SECONDS < deadline )); do
         action=$3
         fixture="$scratch/fixture.txt"
         name="kio-adb-$action-${scratch##*.}"
-        if [[ $action != mkdir ]]; then
+        if [[ $action != mkdir && $action != list-directory ]]; then
             name+=.txt
+        fi
+        if [[ $action == upload-space ]]; then
+            name="kio adb upload ${scratch##*.}.txt"
+            fixture="$scratch/source file.txt"
         fi
         remote="/sdcard/$name"
         printf '%s\n' "KIO ADB $action fixture" > "$fixture"
         if [[ $action == download || $action == list ]]; then
             timeout 15 "$adb" push "$fixture" "$remote"
+        fi
+        if [[ $action == list-directory ]]; then
+            timeout 15 "$adb" shell -T "mkdir '$remote'"
+            timeout 15 "$adb" shell -T "printf '%s' 'alpha' > '$remote/alpha.txt' &&
+                printf '%s' 'two words!' > '$remote/two words.txt' &&
+                : > '$remote/empty.txt' &&
+                printf '%s' 'hidden' > '$remote/.hidden.txt'"
         fi
         timeout 60 "$1" "$action" "$name" "$fixture" "$scratch/downloaded.txt"
         case "$action" in
@@ -89,7 +100,7 @@ while (( SECONDS < deadline )); do
                 fi
                 ;;
             download) cmp "$fixture" "$scratch/downloaded.txt" ;;
-            upload)
+            upload|upload-space)
                 timeout 15 "$adb" shell -T "cat '$remote'" > "$scratch/downloaded.txt"
                 cmp "$fixture" "$scratch/downloaded.txt"
                 ;;
