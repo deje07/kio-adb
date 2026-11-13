@@ -71,7 +71,10 @@ while (( SECONDS < deadline )); do
         timeout 5 "$adb" shell -T "rm '$remote_probe'"; then
         action=$3
         fixture="$scratch/fixture.txt"
-        name="kio-adb-$action-${scratch##*.}.txt"
+        name="kio-adb-$action-${scratch##*.}"
+        if [[ $action != mkdir ]]; then
+            name+=.txt
+        fi
         remote="/sdcard/$name"
         printf '%s\n' "KIO ADB $action fixture" > "$fixture"
         if [[ $action == download || $action == list ]]; then
@@ -79,6 +82,12 @@ while (( SECONDS < deadline )); do
         fi
         timeout 60 "$1" "$action" "$name" "$fixture" "$scratch/downloaded.txt"
         case "$action" in
+            mkdir)
+                if ! timeout 15 "$adb" shell -T "test -d '$remote'"; then
+                    echo "ADB could not find the directory at $remote." >&2
+                    exit 1
+                fi
+                ;;
             download) cmp "$fixture" "$scratch/downloaded.txt" ;;
             upload)
                 timeout 15 "$adb" shell -T "cat '$remote'" > "$scratch/downloaded.txt"

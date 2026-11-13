@@ -35,9 +35,9 @@ Install the Android Emulator and Platform-Tools in the SDK, and create an Androi
 cmake -S . -B build -DKIO_ADB_EMULATOR_TEST=ON
 cmake --build build --parallel
 ANDROID_SDK=/path/to/sdk KIO_ADB_TEST_AVD=test-avd \
-    ctest --test-dir build --output-on-failure -R '^adb-emulator-(download|upload|list)$'
+    ctest --test-dir build --output-on-failure -R '^adb-emulator-(download|upload|list|mkdir)$'
 ```
 
-Each test erases the selected AVD’s internal user data with `-wipe-data`, boots headlessly, and waits for a direct ADB write and read-back in shared storage. The download and list tests seed their own files with ADB. The upload test reads the KIO-uploaded file back with ADB. Both transfer tests compare bytes with the local fixture.
+Each test erases the selected AVD’s internal user data with `-wipe-data`, boots headlessly, and waits for a direct ADB write and read-back in shared storage. The download and list tests seed their own files with ADB. The upload test reads the KIO-uploaded file back with ADB. Both transfer tests compare bytes with the local fixture. The mkdir test creates a directory through KIO, checks the duplicate-directory error, and verifies the directory with ADB.
 
 Each test shuts down its emulator on exit. Set `KIO_ADB_TEST_PORT` to a free even console port if the default of 5580 is occupied. The emulator also needs the next port for ADB.

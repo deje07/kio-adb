@@ -1,5 +1,6 @@
 #include <KIO/CopyJob>
 #include <KIO/ListJob>
+#include <KIO/MkdirJob>
 
 #include <QCoreApplication>
 #include <QDebug>
@@ -30,6 +31,19 @@ int main(int argc, char **argv)
     }
     if (action == "upload") {
         return copy(QUrl::fromLocalFile(arguments[3]), remote);
+    }
+    if (action == "mkdir") {
+        auto *job = KIO::mkdir(remote);
+        if (!job->exec()) {
+            qCritical() << "Directory creation failed:" << remote << job->errorString();
+            return 1;
+        }
+        auto *duplicate = KIO::mkdir(remote);
+        if (duplicate->exec() || duplicate->error() != KIO::ERR_DIR_ALREADY_EXIST) {
+            qCritical() << "Expected a directory collision:" << remote << duplicate->errorString();
+            return 1;
+        }
+        return 0;
     }
     if (action != "list") {
         qCritical() << "Unknown test action:" << action;

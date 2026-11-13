@@ -325,7 +325,13 @@ public:
         }
         const QString target = quote(path);
         const QString mode = permissions < 0 ? QString() : "-m " + QString::number(permissions & 0777, 8) + ' ';
-        const auto result = shell("if [ -e " + target + " ] || [ -L " + target + " ]; then exit 17; fi; mkdir " + mode + target);
+        // Let mkdir decide whether creation succeeded, including concurrent creation.
+        const auto result = shell("mkdir " + mode + target
+            + " || { if [ -d " + target + " ]; then exit 19; fi; "
+              "if [ -e " + target + " ] || [ -L " + target + " ]; then exit 17; fi; exit 1; }");
+        if (result.exitCode == 19) {
+            return failure(KIO::ERR_DIR_ALREADY_EXIST, path);
+        }
         return moveResult(result, path, KIO::ERR_CANNOT_MKDIR);
     }
 
