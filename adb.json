@@ -9,6 +9,7 @@
             "listing": ["Name", "Type", "Size", "Date", "Access"],
             "reading": true,
             "writing": true,
+            "copyFromFile": true,
             "makedir": true,
             "deleting": true,
             "moving": true

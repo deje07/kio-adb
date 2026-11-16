@@ -1,10 +1,12 @@
 #include <KIO/CopyJob>
+#include <KIO/DeleteJob>
 #include <KIO/SimpleJob>
 #include <KIO/ListJob>
 #include <KIO/MkdirJob>
 
 #include <QCoreApplication>
 #include <QDebug>
+#include <QFileInfo>
 #include <QMap>
 
 int main(int argc, char **argv)
@@ -28,6 +30,50 @@ int main(int argc, char **argv)
         }
         return 0;
     };
+    if (action == "upload-multiple") {
+        const QList<QUrl> sources{QUrl::fromLocalFile(arguments[3]), QUrl::fromLocalFile(arguments[4])};
+        const auto firstSize = QFileInfo(arguments[3]).size();
+        const auto secondSize = QFileInfo(arguments[4]).size();
+        auto *job = KIO::copy(sources, directory, KIO::HideProgressInfo);
+        bool sawPartialFile = false;
+        qulonglong processedBytes = 0;
+        QObject::connect(job, &KJob::processedSize, &application,
+                         [&](KJob *, qulonglong bytes) {
+            sawPartialFile |= bytes > 0 && bytes < qMin(firstSize, secondSize);
+            processedBytes = bytes;
+        });
+        if (!job->exec()) {
+            qCritical() << "Multi-file upload failed:" << job->errorString();
+            return 1;
+        }
+        if (!sawPartialFile || processedBytes != qulonglong(firstSize + secondSize)) {
+            qCritical() << "Expected partial-file progress and a final byte count, got"
+                        << sawPartialFile << processedBytes;
+            return 1;
+        }
+        return 0;
+    }
+    if (action == "delete-multiple") {
+        const auto second = QUrl::fromEncoded(directory.toEncoded() + QUrl::toPercentEncoding(arguments[3]));
+        auto *job = KIO::del(QList<QUrl>{remote, second}, KIO::HideProgressInfo);
+        bool sawPartialProgress = false;
+        unsigned long finalPercent = 0;
+        QObject::connect(job, &KJob::percentChanged, &application,
+                         [&](KJob *, unsigned long percent) {
+            sawPartialProgress |= percent == 50;
+            finalPercent = percent;
+        });
+        if (!job->exec()) {
+            qCritical() << "Multi-file deletion failed:" << job->errorString();
+            return 1;
+        }
+        if (!sawPartialProgress || finalPercent != 100) {
+            qCritical() << "Expected deletion progress at 50% and 100%, got"
+                        << sawPartialProgress << finalPercent;
+            return 1;
+        }
+        return 0;
+    }
     if (action == "download") {
         return copy(remote, QUrl::fromLocalFile(arguments[4]));
     }

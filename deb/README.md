@@ -15,7 +15,7 @@ you intend to install on so the package uses that system's Qt and KDE libraries.
 Install the package with APT, which also installs the required dependencies.
 
 ```sh
-sudo apt install "./deb/dist/kio-adb_0.1.0_$(dpkg --print-architecture).deb"
+sudo apt install "./deb/dist/kio-adb_0.2.0_$(dpkg --print-architecture).deb"
 ```
 
 Restart Dolphin and open `adb:/sdcard/` with an authorized Android device

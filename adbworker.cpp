@@ -4,12 +4,15 @@
 
 #include <QCoreApplication>
 #include <QDateTime>
+#include <QFileInfo>
 #include <QLoggingCategory>
 #include <QMimeDatabase>
 #include <QProcess>
+#include <QRegularExpression>
 #include <QTemporaryFile>
 #include <QUrl>
 
+#include <functional>
 #include <sys/stat.h>
 
 using KIO::WorkerResult;
@@ -66,7 +69,8 @@ QString processError(QProcess &process)
     return process.errorString();
 }
 
-AdbResult adb(QStringList arguments, const QString &serial = {})
+AdbResult adb(QStringList arguments, const QString &serial = {},
+              const std::function<void(const QByteArray &)> &reportOutput = {})
 {
     if (!serial.isEmpty()) {
         arguments.prepend(serial);
@@ -88,6 +92,9 @@ AdbResult adb(QStringList arguments, const QString &serial = {})
             process.waitForFinished();
             qCDebug(adbLog) << "ADB command timed out:" << arguments;
             return {false, {}, "ADB command timed out"};
+        }
+        if (reportOutput) {
+            reportOutput(process.readAllStandardOutput());
         }
     }
     const bool ok = succeeded(process);
@@ -245,6 +252,19 @@ public:
         return WorkerResult::pass();
     }
 
+    WorkerResult copy(const QUrl &from, const QUrl &to, int permissions, KIO::JobFlags flags) override
+    {
+        if (!from.isLocalFile()) {
+            return WorkerResult::fail(KIO::ERR_UNSUPPORTED_ACTION, from.toDisplayString());
+        }
+        const QString source = from.toLocalFile();
+        const QFileInfo info(source);
+        if (!info.isFile() || !info.isReadable()) {
+            return failure(KIO::ERR_CANNOT_READ, source);
+        }
+        return upload(to, permissions, flags, info.canonicalFilePath(), info.size());
+    }
+
     WorkerResult put(const QUrl &url, int permissions, KIO::JobFlags flags) override
     {
         qCDebug(adbLog) << "put" << url.path();
@@ -253,20 +273,9 @@ public:
             return failure(KIO::ERR_MALFORMED_URL, url.toDisplayString());
         }
         if (flags & KIO::Resume) {
-            return failure(KIO::ERR_UNSUPPORTED_ACTION, path);
+            return failure(KIO::ERR_UNSUPPORTED_ACTION, url.toDisplayString());
         }
-        const auto device = adb({"get-serialno"});
-        const QString serial = QString::fromUtf8(device.output).trimmed();
-        if (!device.ok || serial.isEmpty() || serial == "unknown") {
-            return failure(KIO::ERR_CANNOT_CONNECT, path, device.error);
-        }
-        const QString target = quote(path);
-        const auto exists = shell("test -e " + target + " || test -L " + target, serial);
-        const bool overwrite = flags.testFlag(KIO::Overwrite);
-        if (exists.ok && !overwrite) {
-            return failure(KIO::ERR_FILE_ALREADY_EXIST, path);
-        }
-
+        canResume(0);
         QTemporaryFile local;
         if (!local.open()) {
             return failure(KIO::ERR_CANNOT_WRITE, path, local.errorString());
@@ -287,6 +296,31 @@ public:
         }
         local.close();
 
+        return upload(url, permissions, flags, local.fileName(), local.size());
+    }
+
+    WorkerResult upload(const QUrl &url, int permissions, KIO::JobFlags flags,
+                        const QString &source, KIO::filesize_t size)
+    {
+        const QString path = remotePath(url);
+        if (path.isEmpty() || path == "/") {
+            return failure(KIO::ERR_MALFORMED_URL, url.toDisplayString());
+        }
+        if (flags & KIO::Resume) {
+            return failure(KIO::ERR_UNSUPPORTED_ACTION, path);
+        }
+        const auto device = adb({"get-serialno"});
+        const QString serial = QString::fromUtf8(device.output).trimmed();
+        if (!device.ok || serial.isEmpty() || serial == "unknown") {
+            return failure(KIO::ERR_CANNOT_CONNECT, path, device.error);
+        }
+        const QString target = quote(path);
+        const auto exists = shell("test -e " + target + " || test -L " + target, serial);
+        const bool overwrite = flags.testFlag(KIO::Overwrite);
+        if (exists.ok && !overwrite) {
+            return failure(KIO::ERR_FILE_ALREADY_EXIST, path);
+        }
+
         const auto destination = shell(
             "if [ -L " + target + " ] || { [ -e " + target + " ] && [ ! -f " + target + " ]; }; then exit 18; fi; "
             "if [ -f " + target + " ]; then stat -c '%a' " + target + "; fi", serial);
@@ -297,8 +331,24 @@ public:
             return failure(KIO::ERR_FILE_ALREADY_EXIST, path);
         }
 
-        qCDebug(adbLog) << "Uploading" << local.size() << "bytes to" << path << "on" << serial;
-        const auto pushed = adb({"push", local.fileName(), path}, serial);
+        totalSize(size);
+        static const QRegularExpression progressLine(QStringLiteral(R"(^\[ *(\d{1,3})%\])"));
+        QByteArray pending;
+        int lastPercent = 0;
+        const auto pushed = adb({"push", source, path}, serial, [&](const QByteArray &output) {
+            pending += output;
+            pending.replace('\r', '\n');
+            qsizetype end;
+            while ((end = pending.indexOf('\n')) >= 0) {
+                const auto match = progressLine.match(QString::fromUtf8(pending.first(end)));
+                pending.remove(0, end + 1);
+                const int percent = match.captured(1).toInt();
+                if (percent > lastPercent && percent < 100) {
+                    lastPercent = percent;
+                    processedSize(size / 100 * percent + size % 100 * percent / 100);
+                }
+            }
+        });
         if (!pushed.ok) {
             return failure(KIO::ERR_CANNOT_WRITE, path, pushed.error);
         }
@@ -313,6 +363,7 @@ public:
         if (modified.isValid()) {
             shell("touch -m -d @" + QString::number(modified.toSecsSinceEpoch()) + ' ' + target, serial);
         }
+        processedSize(size);
         return WorkerResult::pass();
     }
 
