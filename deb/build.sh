@@ -9,8 +9,8 @@ trap 'exit 1' HUP INT TERM
 
 mkdir "$build_dir/kio-adb"
 cp -- "$source_dir/CMakeLists.txt" "$source_dir/LICENSE" "$source_dir/README.md" \
-    "$source_dir/adb.desktop" "$source_dir/adb.json" "$source_dir/adbworker.cpp" "$build_dir/kio-adb/"
-cp -R -- "$source_dir/tests" "$deb_dir/debian" "$build_dir/kio-adb/"
+    "$build_dir/kio-adb/"
+cp -R -- "$source_dir/src" "$source_dir/tests" "$deb_dir/debian" "$build_dir/kio-adb/"
 
 (
     cd "$build_dir/kio-adb"
