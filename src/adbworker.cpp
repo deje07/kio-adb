@@ -4,17 +4,28 @@
 
 #include <QCoreApplication>
 #include <QDateTime>
+#include <QEventLoop>
+#include <QFile>
 #include <QFileInfo>
 #include <QLoggingCategory>
 #include <QMimeDatabase>
 #include <QProcess>
+#include <QProcessEnvironment>
 #include <QRegularExpression>
+#include <QScopeGuard>
 #include <QSet>
+#include <QSocketNotifier>
 #include <QTemporaryFile>
+#include <QTimer>
 #include <QUrl>
 
+#include <cerrno>
+#include <cstdlib>
+#include <cstring>
+#include <fcntl.h>
 #include <functional>
 #include <sys/stat.h>
+#include <unistd.h>
 
 using KIO::WorkerResult;
 
@@ -23,6 +34,7 @@ Q_LOGGING_CATEGORY(adbLog, "kf.kio.workers.adb", QtWarningMsg)
 namespace
 {
 constexpr int adbTimeout = 30000;
+constexpr int pushIdleTimeout = 10000;
 
 QString quote(QString value)
 {
@@ -140,8 +152,7 @@ QString processError(QProcess &process)
     return process.errorString();
 }
 
-AdbResult adb(QStringList arguments, const QString &serial = {},
-              const std::function<void(const QByteArray &)> &reportOutput = {})
+AdbResult adb(QStringList arguments, const QString &serial = {})
 {
     if (!serial.isEmpty()) {
         arguments.prepend(serial);
@@ -156,16 +167,12 @@ AdbResult adb(QStringList arguments, const QString &serial = {},
         return {false, {}, process.errorString()};
     }
 
-    // A push can run for much longer than the timeout while it keeps reporting progress.
     while (process.state() != QProcess::NotRunning) {
         if (!process.waitForReadyRead(adbTimeout) && process.state() != QProcess::NotRunning) {
             process.kill();
             process.waitForFinished();
             qCDebug(adbLog) << "ADB command timed out:" << arguments;
             return {false, {}, "ADB command timed out"};
-        }
-        if (reportOutput) {
-            reportOutput(process.readAllStandardOutput());
         }
     }
     const bool ok = succeeded(process);
@@ -174,6 +181,72 @@ AdbResult adb(QStringList arguments, const QString &serial = {},
     const auto error = ok || exitCode == 17 ? QString() : processError(process);
     qCDebug(adbLog) << "ADB finished:" << exitCode << "stdout bytes:" << output.size() << error;
     return {ok, output, error, exitCode};
+}
+
+AdbResult adbPush(const QString &serial, const QString &source, const QString &path,
+                  const std::function<void(const QByteArray &)> &reportOutput)
+{
+    // ADB only emits live push progress when stdout is a smart terminal.
+    const int fd = posix_openpt(O_RDWR | O_NOCTTY | O_CLOEXEC | O_NONBLOCK);
+    if (fd < 0) {
+        return {false, {}, QString::fromLocal8Bit(std::strerror(errno))};
+    }
+    const auto closeTerminal = qScopeGuard([fd] { close(fd); });
+    if (grantpt(fd) < 0 || unlockpt(fd) < 0) {
+        return {false, {}, QString::fromLocal8Bit(std::strerror(errno))};
+    }
+    char slavePath[256];
+    const int terminalError = ptsname_r(fd, slavePath, sizeof(slavePath));
+    if (terminalError != 0) {
+        return {false, {}, QString::fromLocal8Bit(std::strerror(terminalError))};
+    }
+
+    QProcess process;
+    auto environment = QProcessEnvironment::systemEnvironment();
+    environment.insert("TERM", "xterm");
+    process.setProcessEnvironment(environment);
+    process.setStandardInputFile(QProcess::nullDevice());
+    process.setStandardOutputFile(QFile::decodeName(slavePath));
+
+    QEventLoop loop;
+    QTimer idle;
+    idle.setSingleShot(true);
+    idle.setTimerType(Qt::PreciseTimer);
+    QSocketNotifier output(fd, QSocketNotifier::Read);
+    const auto readOutput = [&] {
+        char buffer[4096];
+        ssize_t count;
+        while ((count = read(fd, buffer, sizeof(buffer))) > 0) {
+            idle.start(pushIdleTimeout);
+            reportOutput(QByteArray(buffer, count));
+        }
+        if (count == 0 || (errno != EAGAIN && errno != EINTR)) {
+            output.setEnabled(false);
+        }
+    };
+    QObject::connect(&output, &QSocketNotifier::activated, &loop, readOutput);
+    QObject::connect(&process, &QProcess::finished, &loop, &QEventLoop::quit);
+    QObject::connect(&idle, &QTimer::timeout, &loop, [&] {
+        readOutput();
+        if (!idle.isActive()) {
+            loop.quit();
+        }
+    });
+
+    process.start("adb", {"-s", serial, "push", source, path});
+    if (!process.waitForStarted(adbTimeout)) {
+        return {false, {}, process.errorString()};
+    }
+    idle.start(pushIdleTimeout);
+    loop.exec();
+    if (process.state() != QProcess::NotRunning) {
+        process.kill();
+        process.waitForFinished();
+        return {false, {}, "ADB push timed out"};
+    }
+    readOutput();
+    const bool ok = succeeded(process);
+    return {ok, {}, ok ? QString() : processError(process)};
 }
 
 AdbResult shell(const QString &command, const QString &serial)
@@ -455,8 +528,9 @@ EOF
         static const QRegularExpression progressLine(QStringLiteral(R"(^\[ *(\d{1,3})%\])"));
         QByteArray pending;
         int lastPercent = 0;
-        const auto pushed = adb({"push", source, path}, serial, [&](const QByteArray &output) {
+        const auto pushed = adbPush(serial, source, path, [&](const QByteArray &output) {
             pending += output;
+            pending.replace("\x1b[K", "\n");
             pending.replace('\r', '\n');
             qsizetype end;
             while ((end = pending.indexOf('\n')) >= 0) {
