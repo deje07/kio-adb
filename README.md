@@ -8,6 +8,8 @@ Browse and transfer files on connected Android devices from Dolphin and other KD
 - Download files and upload directly to the device with overwrite support.
 - Create directories, rename or move files and directories, and permanently delete files and empty directories.
 
+For RPMs on openSUSE and Fedora, see the [Open Build Service instructions](rpm/README.md).
+
 ## Build on Ubuntu 26.04 LTS
 
 ```sh

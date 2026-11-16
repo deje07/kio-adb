@@ -1,0 +1,10 @@
+<services>
+  <service name="obs_scm">
+    <param name="url">https://github.com/deje07/kio-adb.git</param>
+    <param name="scm">git</param>
+    <param name="revision">v0.3.1</param>
+    <param name="filename">kio-adb</param>
+    <param name="version">0.3.1</param>
+  </service>
+  <service name="tar" mode="buildtime"/>
+</services>
