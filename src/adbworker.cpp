@@ -34,7 +34,10 @@ Q_LOGGING_CATEGORY(adbLog, "kf.kio.workers.adb", QtWarningMsg)
 namespace
 {
 constexpr int adbTimeout = 30000;
-constexpr int pushIdleTimeout = 10000;
+// PR #3 review: ADB suppresses unchanged integer percentages, so active
+// large uploads can be silent for over ten seconds. Thirty seconds mitigates
+// this; console silence still does not prove that a transfer has stalled.
+constexpr int pushIdleTimeout = 30000;
 
 QString quote(QString value)
 {
@@ -186,7 +189,7 @@ AdbResult adb(QStringList arguments, const QString &serial = {})
 AdbResult adbPush(const QString &serial, const QString &source, const QString &path,
                   const std::function<void(const QByteArray &)> &reportOutput)
 {
-    // ADB only emits live push progress when stdout is a smart terminal.
+    // ADB versions use either stdout or stderr for terminal progress.
     const int fd = posix_openpt(O_RDWR | O_NOCTTY | O_CLOEXEC | O_NONBLOCK);
     if (fd < 0) {
         return {false, {}, QString::fromLocal8Bit(std::strerror(errno))};
@@ -206,6 +209,7 @@ AdbResult adbPush(const QString &serial, const QString &source, const QString &p
     environment.insert("TERM", "xterm");
     process.setProcessEnvironment(environment);
     process.setStandardInputFile(QProcess::nullDevice());
+    process.setProcessChannelMode(QProcess::MergedChannels);
     process.setStandardOutputFile(QFile::decodeName(slavePath));
 
     QEventLoop loop;
@@ -213,10 +217,13 @@ AdbResult adbPush(const QString &serial, const QString &source, const QString &p
     idle.setSingleShot(true);
     idle.setTimerType(Qt::PreciseTimer);
     QSocketNotifier output(fd, QSocketNotifier::Read);
+    QByteArray diagnostics;
     const auto readOutput = [&] {
         char buffer[4096];
         ssize_t count;
         while ((count = read(fd, buffer, sizeof(buffer))) > 0) {
+            diagnostics += QByteArray(buffer, count);
+            diagnostics = diagnostics.right(64 * 1024);
             idle.start(pushIdleTimeout);
             reportOutput(QByteArray(buffer, count));
         }
@@ -246,7 +253,12 @@ AdbResult adbPush(const QString &serial, const QString &source, const QString &p
     }
     readOutput();
     const bool ok = succeeded(process);
-    return {ok, {}, ok ? QString() : processError(process)};
+    QString error = QString::fromUtf8(diagnostics).trimmed();
+    error.remove(QStringLiteral("\x1b[K"));
+    if (!ok && error.isEmpty()) {
+        error = processError(process);
+    }
+    return {ok, {}, ok ? QString() : error};
 }
 
 AdbResult shell(const QString &command, const QString &serial)

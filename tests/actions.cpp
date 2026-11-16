@@ -198,10 +198,11 @@ int main(int argc, char **argv)
     if (action == "upload" || action == "upload-space") {
         return copy(QUrl::fromLocalFile(arguments[3]), remote);
     }
-    if (action == "upload-stalled") {
+    if (action == "upload-stalled" || action == "upload-error") {
         auto *job = KIO::copyAs(QUrl::fromLocalFile(arguments[3]), remote, KIO::HideProgressInfo);
         if (job->exec() || job->error() != KIO::ERR_CANNOT_WRITE
-            || !job->errorText().contains("ADB push timed out")) {
+            || !job->errorText().contains(action == "upload-error"
+                ? "remote permission denied" : "ADB push timed out")) {
             qCritical() << "Expected an upload inactivity timeout:" << job->errorString();
             return 1;
         }
