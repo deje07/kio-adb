@@ -246,14 +246,44 @@ public:
             return failure(KIO::ERR_MALFORMED_URL, url.toDisplayString(), "Choose a device at adb:/");
         }
 
-        // NUL-delimited names, metadata, and link targets preserve whitespace and newlines.
-        const auto result = shell("cd " + quote(path) + " && "
-            "test -r . && test -x . && "
-            "for file in . ./* ./.[!.]* ./..?*; do "
-            "metadata=$(" + statCommand + "\"$file\" 2>/dev/null || "
-            + lstatCommand + "\"$file\" 2>/dev/null) || continue; "
-            "printf '%s\\000%s\\000' \"${file#./}\" \"$metadata\"; "
-            + linkCommand("\"$file\"") + "done", serial);
+        // Toybox stat -c cannot emit NULs. Batch only numeric metadata, then pair
+        // its lines with the original shell arguments (never parse filenames).
+        // Symlinks retain the per-entry path, including dangling-link fallback.
+        const auto result = shell("cd " + quote(path) + R"SH( &&
+            test -r . && test -x . || exit 1
+            entry() {
+                metadata=$(stat -L -c '%f %s %Y' "$1" 2>/dev/null ||
+                    stat -c '%f %s %Y' "$1" 2>/dev/null) || return 0
+                printf '%s\000%s\000' "${1#./}" "$metadata"
+                if [ -L "$1" ]; then readlink -n "$1" || exit 1; fi
+                printf '\000'
+            }
+            batch() {
+                [ "$#" -gt 0 ] || return 0
+                if metadata=$(stat -L -c '%f %s %Y' "$@" 2>/dev/null); then
+                    for item do
+                        IFS= read -r row || exit 1
+                        printf '%s\000%s\000\000' "${item#./}" "$row"
+                    done <<EOF
+$metadata
+EOF
+                else
+                    # A vanished/unreadable entry must not shift metadata onto
+                    # another name. Discard partial output and retry this batch.
+                    for item do entry "$item"; done
+                fi
+            }
+            set --
+            for file in . ./* ./.[!.]* ./..?*; do
+                if [ -L "$file" ]; then
+                    entry "$file"
+                elif [ -e "$file" ]; then
+                    set -- "$@" "$file"
+                    if [ "$#" -ge 128 ]; then batch "$@"; set --; fi
+                fi
+            done
+            batch "$@"
+        )SH", serial);
         if (!result.ok) {
             return failure(KIO::ERR_CANNOT_ENTER_DIRECTORY, path, result.error);
         }

@@ -24,6 +24,36 @@ int main(int argc, char **argv)
     const QUrl directory("adb://" + qEnvironmentVariable("KIO_ADB_TEST_SERIAL") + "/sdcard/");
     const QUrl remote = QUrl::fromEncoded(directory.toEncoded() + QUrl::toPercentEncoding(name));
 
+    if (action == "batched-list") {
+        QUrl root("adb://mock");
+        root.setPath(arguments[3] + '/');
+        QMap<QString, qlonglong> remaining;
+        for (int i = 0; i < 300; ++i) {
+            remaining.insert(QString::number(i), i);
+        }
+        bool valid = true;
+        auto *job = KIO::listDir(root, KIO::HideProgressInfo);
+        QObject::connect(job, &KIO::ListJob::entries, &application,
+                         [&](KIO::Job *, const KIO::UDSEntryList &entries) {
+            for (const auto &entry : entries) {
+                const auto filename = entry.stringValue(KIO::UDSEntry::UDS_NAME);
+                if (filename == "." || filename == "..") continue;
+                const auto it = remaining.find(filename);
+                if (it == remaining.end() || entry.isLink()
+                    || entry.numberValue(KIO::UDSEntry::UDS_SIZE) != it.value()) {
+                    valid = false;
+                } else {
+                    remaining.erase(it);
+                }
+            }
+        });
+        if (!job->exec() || !valid || !remaining.isEmpty()) {
+            qCritical() << "Batched listing failed:" << job->errorString() << remaining.keys();
+            return 1;
+        }
+        return 0;
+    }
+
     if (action == "symlinks") {
         QUrl root("adb://mock");
         root.setPath(arguments[3] + '/');
