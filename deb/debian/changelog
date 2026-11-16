@@ -1,3 +1,11 @@
+kio-adb (0.4.0) resolute; urgency=medium
+
+  * Batch directory metadata reads to reduce process launches.
+  * Report symlink destinations in listings and stat requests.
+  * Move worker sources and metadata into src.
+
+ -- Gabor Szecsi <deje07@gmail.com>  Mon, 16 Nov 2026 21:05:00 +0100
+
 kio-adb (0.3.1) resolute; urgency=medium
 
   * Include adb.desktop in the staged source to fix Debian package builds.
