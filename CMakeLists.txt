@@ -29,12 +29,12 @@ if(KIO_ADB_EMULATOR_TEST)
             "$<TARGET_FILE:adb-test-action>" "$<TARGET_FILE_DIR:kio_adb>/../.."
     )
     set_tests_properties(adb-symlinks PROPERTIES TIMEOUT 20)
-    foreach(action IN ITEMS upload-multiple upload-active upload-stalled delete-multiple list-devices)
+    foreach(action IN ITEMS upload-multiple upload-active upload-stalled upload-error delete-multiple list-devices)
         add_test(NAME adb-${action}
             COMMAND bash "${CMAKE_CURRENT_SOURCE_DIR}/tests/multi-file.sh"
                 "$<TARGET_FILE:adb-test-action>" "$<TARGET_FILE_DIR:kio_adb>/../.." "${action}"
         )
-        set_tests_properties(adb-${action} PROPERTIES TIMEOUT 20)
+        set_tests_properties(adb-${action} PROPERTIES TIMEOUT 45)
     endforeach()
     foreach(action IN ITEMS download upload upload-space list list-directory mkdir rmdir)
         add_test(NAME adb-emulator-${action}

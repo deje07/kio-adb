@@ -50,15 +50,19 @@ case "$1" in
         esac
         ;;
     push)
+        if [[ $MOCK_ADB_ACTION == upload-error ]]; then
+            printf "adb: remote permission denied\n" >&2
+            exit 1
+        fi
         if [[ $MOCK_ADB_ACTION == upload-stalled ]]; then
-            exec sleep 60
+            exec sleep 160
         fi
         if [[ $MOCK_ADB_ACTION == upload-active ]]; then
             # Like ADB, the mock only reports live activity on a smart terminal.
             for percent in 25 50; do
-                sleep 6
-                if [[ -t 1 && ${TERM:-dumb} != dumb ]]; then
-                    printf '\r[%3d%%] %s\033[K' "$percent" "$3"
+                sleep 16
+                if [[ -t 2 && ${TERM:-dumb} != dumb ]]; then
+                    printf '\r[%3d%%] %s\033[K' "$percent" "$3" >&2
                 fi
             done
         fi
@@ -85,6 +89,9 @@ case "$3" in
     upload-active)
         "$1" upload first.txt "$scratch/first.txt" unused
         cmp "$scratch/first.txt" "$MOCK_ADB_STORAGE/first.txt"
+        ;;
+    upload-error)
+        "$1" upload-error first.txt "$scratch/first.txt" unused
         ;;
     upload-stalled)
         "$1" upload-stalled first.txt "$scratch/first.txt" unused
