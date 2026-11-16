@@ -1,0 +1,29 @@
+pkgname=kio-adb
+pkgver=0.3.1
+pkgrel=1
+pkgdesc='KDE KIO worker for Android devices over ADB'
+arch=('x86_64' 'aarch64')
+url='https://github.com/deje07/kio-adb'
+license=('LGPL-2.0-or-later')
+depends=('android-tools' 'gcc-libs' 'glibc' 'kio>=6.0' 'qt6-base')
+makedepends=('cmake>=3.22' 'extra-cmake-modules>=6.0')
+optdepends=('dolphin: browse Android devices in a file manager')
+# build.sh supplies a snapshot of the local checkout and its checksum.
+source=("$pkgname-$pkgver.tar.gz")
+sha256sums=('SKIP')
+
+build() {
+    cmake -S "$srcdir/$pkgname" -B "$srcdir/build" \
+        -DCMAKE_BUILD_TYPE=None \
+        -DCMAKE_INSTALL_PREFIX=/usr \
+        -DKDE_INSTALL_LIBDIR=lib \
+        -DKDE_INSTALL_USE_QT_SYS_PATHS=ON \
+        -DKIO_ADB_EMULATOR_TEST=OFF
+    cmake --build "$srcdir/build"
+}
+
+package() {
+    DESTDIR="$pkgdir" cmake --install "$srcdir/build"
+    install -Dm644 "$srcdir/$pkgname/README.md" \
+        "$pkgdir/usr/share/doc/$pkgname/README.md"
+}

@@ -8,6 +8,11 @@ Browse and transfer files on connected Android devices from Dolphin and other KD
 - Download files and upload directly to the device with overwrite support.
 - Create directories, rename or move files and directories, and permanently delete files and empty directories.
 
+## Packages
+
+- **Ubuntu:** see the [deb build and installation instructions](deb/README.md).
+- **Arch Linux and Arch-based systems:** see the [Arch package instructions](arch/README.md), or run `./arch/build.sh --install` after installing `base-devel`.
+
 ## Build on Ubuntu 26.04 LTS
 
 ```sh
