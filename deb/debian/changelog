@@ -1,3 +1,9 @@
+kio-adb (0.3.1) resolute; urgency=medium
+
+  * Include adb.desktop in the staged source to fix Debian package builds.
+
+ -- Gabor Szecsi <deje07@gmail.com>  Mon, 16 Nov 2026 12:23:52 +0100
+
 kio-adb (0.3.0) resolute; urgency=medium
 
   * Browse connected devices from adb:/ and Dolphin's Network view.
