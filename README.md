@@ -23,7 +23,7 @@ Restart Dolphin after installing the worker.
 
 1. Enable USB debugging on the phone, connect it, and approve the debugging prompt.
 2. Open **Network → ADB** in Dolphin, or enter `adb:/` in the location bar.
-3. Open a device, then navigate to `sdcard/` for shared storage.
+3. Open a device to access its shared storage at `/sdcard/`.
 
 Device URLs include the selected ADB identifier, for example `adb://emulator-5554/sdcard/` or
 `adb://192.168.1.20:5555/sdcard/`. Identifiers that would change during URL parsing use an
@@ -36,7 +36,7 @@ Uploads use a local temporary file, then push directly to the requested Android 
 
 ## Smoke test
 
-Open a device under `adb:/` and create a folder under `sdcard/Download/`. Copy a nonempty file and a zero-byte file into it, then copy both back to a different local folder and compare them with the originals. Repeat an upload to exercise the overwrite prompt. Rename the uploaded files, delete them, then delete the empty test folder.
+Open a device under `adb:/` and create a folder under `Download/`. Copy a nonempty file and a zero-byte file into it, then copy both back to a different local folder and compare them with the originals. Repeat an upload to exercise the overwrite prompt. Rename the uploaded files, delete them, then delete the empty test folder.
 
 ## Automated emulator test
 

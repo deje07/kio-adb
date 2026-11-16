@@ -514,7 +514,8 @@ private:
                 continue;
             }
             listed.insert(serial);
-            const QUrl target = deviceUrl(serial);
+            QUrl target = deviceUrl(serial);
+            target.setPath("/sdcard/");
             if (deviceSerial(target) != serial) {
                 qCWarning(adbLog) << "Cannot represent ADB device in a URL:" << serial;
                 continue;
