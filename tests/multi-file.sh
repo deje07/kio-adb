@@ -5,17 +5,33 @@ scratch=$(mktemp -d)
 trap 'rm -rf -- "$scratch"' EXIT
 mkdir "$scratch/remote"
 export MOCK_ADB_STORAGE="$scratch/remote"
+export KIO_ADB_TEST_SERIAL=mock
+export MOCK_ADB_ACTION="$3"
 export PATH="$scratch:$PATH"
 export QT_PLUGIN_PATH="$2${QT_PLUGIN_PATH:+:$QT_PLUGIN_PATH}"
 
 cat > "$scratch/adb" <<'ADB'
 #!/usr/bin/env bash
 set -euo pipefail
-if [[ $1 == -s ]]; then
-    shift 2
+if [[ $MOCK_ADB_ACTION == list-devices ]]; then
+    if [[ $1 == devices && $2 == -l ]]; then
+        printf '%s\n' 'List of devices attached' \
+            'mock device transport_id:1' \
+            '192.0.2.12:5555 device transport_id:2' \
+            'adb-AbC-XYZ._adb-tls-connect._tcp device transport_id:3' \
+            'unavailable unauthorized transport_id:4'
+        exit 0
+    fi
+    [[ $1 == -s && $3 == shell && $5 == "stat -L"* ]] || exit 1
+    case "$2" in
+        mock|192.0.2.12:5555|adb-AbC-XYZ._adb-tls-connect._tcp) ;;
+        *) exit 1 ;;
+    esac
+else
+    [[ $1 == -s && $2 == "$KIO_ADB_TEST_SERIAL" ]] || exit 1
 fi
+shift 2
 case "$1" in
-    get-serialno) echo mock ;;
     shell)
         case "$3" in
             "stat -L"*"/sdcard'"*) echo '41ff 4096 1700000000' ;;
@@ -48,6 +64,7 @@ chmod +x "$scratch/adb"
 printf '%s\n' 'First upload fixture' > "$scratch/first.txt"
 printf '%s\n' 'Second upload fixture with spaces in its name' > "$scratch/second file.txt"
 case "$3" in
+    list-devices) "$1" list-devices unused unused unused ;;
     upload-multiple)
         "$1" upload-multiple unused "$scratch/first.txt" "$scratch/second file.txt"
         cmp "$scratch/first.txt" "$MOCK_ADB_STORAGE/first.txt"

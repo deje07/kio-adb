@@ -23,6 +23,7 @@ if [[ ! $port =~ ^[0-9]{4}$ ]] || (( port < 5554 || port > 5682 || port % 2 )); 
     exit 1
 fi
 export ANDROID_SERIAL="emulator-$port"
+export KIO_ADB_TEST_SERIAL="$ANDROID_SERIAL"
 devices=$("$adb" devices)
 if [[ $devices == *"$ANDROID_SERIAL"$'\t'* ]]; then
     echo "$ANDROID_SERIAL is already registered with ADB." >&2

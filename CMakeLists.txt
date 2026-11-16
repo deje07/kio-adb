@@ -1,5 +1,5 @@
 cmake_minimum_required(VERSION 3.22)
-project(kio-adb VERSION 0.2.0 LANGUAGES CXX)
+project(kio-adb VERSION 0.3.0 LANGUAGES CXX)
 
 find_package(ECM 6.0 REQUIRED NO_MODULE)
 list(APPEND CMAKE_MODULE_PATH "${ECM_MODULE_PATH}")
@@ -13,6 +13,7 @@ set_target_properties(kio_adb PROPERTIES AUTOMOC ON PREFIX "" OUTPUT_NAME adb)
 target_compile_features(kio_adb PRIVATE cxx_std_17)
 target_link_libraries(kio_adb PRIVATE Qt6::Core KF6::KIOCore)
 install(TARGETS kio_adb DESTINATION "${KDE_INSTALL_PLUGINDIR}/kf6/kio")
+install(FILES adb.desktop DESTINATION "${KDE_INSTALL_DATADIR}/remoteview")
 
 option(KIO_ADB_EMULATOR_TEST "Enable the Android emulator integration test" OFF)
 if(KIO_ADB_EMULATOR_TEST)
@@ -23,7 +24,7 @@ if(KIO_ADB_EMULATOR_TEST)
     add_executable(adb-test-action tests/actions.cpp)
     target_link_libraries(adb-test-action PRIVATE Qt6::Core KF6::KIOCore)
     add_dependencies(adb-test-action kio_adb)
-    foreach(action IN ITEMS upload-multiple delete-multiple)
+    foreach(action IN ITEMS upload-multiple delete-multiple list-devices)
         add_test(NAME adb-${action}
             COMMAND bash "${CMAKE_CURRENT_SOURCE_DIR}/tests/multi-file.sh"
                 "$<TARGET_FILE:adb-test-action>" "$<TARGET_FILE_DIR:kio_adb>/../.." "${action}"

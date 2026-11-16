@@ -1,0 +1,7 @@
+[Desktop Entry]
+Type=Link
+Name=ADB
+Icon=phone
+URL=adb:/
+Comment=Android devices through ADB
+Comment[hu]=Android eszközök ADB-n

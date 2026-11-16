@@ -9,6 +9,7 @@
 #include <QMimeDatabase>
 #include <QProcess>
 #include <QRegularExpression>
+#include <QSet>
 #include <QTemporaryFile>
 #include <QUrl>
 
@@ -29,13 +30,83 @@ QString quote(QString value)
     return "'" + value + "'";
 }
 
+const QString encodedPrefix = "id-";
+
+QString networkSerial(const QUrl &url)
+{
+    QString host = url.host();
+    if (host.contains(':')) {
+        host = '[' + host + ']';
+    }
+    return host + ':' + QString::number(url.port());
+}
+
+QUrl deviceUrl(const QString &serial)
+{
+    QUrl url("adb://" + serial, QUrl::StrictMode);
+    if (url.isValid() && !url.host().isEmpty() && !url.host().startsWith(encodedPrefix)
+        && url.userInfo().isEmpty() && !url.hasQuery() && !url.hasFragment()
+        && (url.port() == -1 ? url.host() : networkSerial(url)) == serial) {
+        return url;
+    }
+
+    const auto hex = serial.toUtf8().toHex();
+    QString host = encodedPrefix;
+    for (qsizetype offset = 0; offset < hex.size(); offset += 60) {
+        if (offset != 0) {
+            host += '.';
+        }
+        host += QString::fromLatin1(hex.mid(offset, 60));
+    }
+    return QUrl("adb://" + host);
+}
+
+QString deviceSerial(const QUrl &url)
+{
+    if (!url.isValid() || url.scheme() != "adb" || url.host().isEmpty()
+        || !url.userInfo().isEmpty() || url.hasQuery() || url.hasFragment()) {
+        return {};
+    }
+    const QString host = url.host();
+    if (host.startsWith(encodedPrefix)) {
+        if (url.port() != -1) {
+            return {};
+        }
+        QString hex = host.mid(encodedPrefix.size());
+        hex.remove('.');
+        const auto bytes = QByteArray::fromHex(hex.toLatin1());
+        const QString serial = QString::fromUtf8(bytes);
+        if (bytes.isEmpty() || bytes.toHex() != hex.toLatin1() || serial.toUtf8() != bytes
+            || serial.contains(QChar::Null) || deviceUrl(serial).host() != host) {
+            return {};
+        }
+        return serial;
+    }
+    return url.port() == -1 ? host : networkSerial(url);
+}
+
+bool isDeviceList(const QUrl &url)
+{
+    return url.isValid() && url.scheme() == "adb" && url.authority().isEmpty()
+        && !url.hasQuery() && !url.hasFragment() && (url.path().isEmpty() || url.path() == "/");
+}
+
+KIO::UDSEntry directoryEntry(const QString &name)
+{
+    KIO::UDSEntry entry;
+    entry.fastInsert(KIO::UDSEntry::UDS_NAME, name);
+    entry.fastInsert(KIO::UDSEntry::UDS_FILE_TYPE, S_IFDIR);
+    entry.fastInsert(KIO::UDSEntry::UDS_ACCESS, 0555);
+    return entry;
+}
+
 QString remotePath(const QUrl &url)
 {
     QString path = url.path(QUrl::FullyDecoded);
     if (path.isEmpty()) {
         path = "/";
     }
-    if (url.scheme() != "adb" || !url.authority().isEmpty() || !path.startsWith('/') || path.contains(QChar::Null)) {
+    if (!path.startsWith('/') || path.contains(QChar::Null)) {
         return {};
     }
     while (path.size() > 1 && path.endsWith('/')) {
@@ -105,7 +176,7 @@ AdbResult adb(QStringList arguments, const QString &serial = {},
     return {ok, output, error, exitCode};
 }
 
-AdbResult shell(const QString &command, const QString &serial = {})
+AdbResult shell(const QString &command, const QString &serial)
 {
     return adb({"shell", "-T", command}, serial);
 }
@@ -152,15 +223,13 @@ public:
     WorkerResult listDir(const QUrl &url) override
     {
         qCDebug(adbLog) << "listDir" << url.path();
-        if (url.path().isEmpty() && url.authority().isEmpty()) {
-            QUrl root = url;
-            root.setPath("/");
-            redirection(root);
-            return WorkerResult::pass();
+        if (isDeviceList(url)) {
+            return listDevices();
         }
+        const QString serial = deviceSerial(url);
         const QString path = remotePath(url);
-        if (path.isEmpty()) {
-            return failure(KIO::ERR_MALFORMED_URL, url.toDisplayString());
+        if (serial.isEmpty() || path.isEmpty()) {
+            return failure(KIO::ERR_MALFORMED_URL, url.toDisplayString(), "Choose a device at adb:/");
         }
 
         // NUL-delimited names allow whitespace and newlines in filenames.
@@ -169,7 +238,7 @@ public:
             "for file in . ./* ./.[!.]* ./..?*; do "
             "metadata=$(" + statCommand + "\"$file\" 2>/dev/null || "
             + lstatCommand + "\"$file\" 2>/dev/null) || continue; "
-            "printf '%s\\000%s\\000' \"${file#./}\" \"$metadata\"; done");
+            "printf '%s\\000%s\\000' \"${file#./}\" \"$metadata\"; done", serial);
         if (!result.ok) {
             return failure(KIO::ERR_CANNOT_ENTER_DIRECTORY, path, result.error);
         }
@@ -190,12 +259,17 @@ public:
     WorkerResult stat(const QUrl &url) override
     {
         qCDebug(adbLog) << "stat" << url.path();
+        if (isDeviceList(url)) {
+            statEntry(directoryEntry("."));
+            return WorkerResult::pass();
+        }
+        const QString serial = deviceSerial(url);
         const QString path = remotePath(url);
-        if (path.isEmpty()) {
-            return failure(KIO::ERR_MALFORMED_URL, url.toDisplayString());
+        if (serial.isEmpty() || path.isEmpty()) {
+            return failure(KIO::ERR_MALFORMED_URL, url.toDisplayString(), "Choose a device at adb:/");
         }
         const QString argument = quote(path);
-        const auto result = shell(statCommand + argument + " 2>/dev/null || " + lstatCommand + argument);
+        const auto result = shell(statCommand + argument + " 2>/dev/null || " + lstatCommand + argument, serial);
         KIO::UDSEntry entry;
         if (!result.ok || !parseEntry(result.output, path == "/" ? "." : path.section('/', -1), entry)) {
             return failure(KIO::ERR_DOES_NOT_EXIST, path, result.error);
@@ -207,14 +281,15 @@ public:
     WorkerResult get(const QUrl &url) override
     {
         qCDebug(adbLog) << "get" << url.path();
+        const QString serial = deviceSerial(url);
         const QString path = remotePath(url);
-        if (path.isEmpty()) {
-            return failure(KIO::ERR_MALFORMED_URL, url.toDisplayString());
+        if (serial.isEmpty() || path.isEmpty()) {
+            return failure(KIO::ERR_MALFORMED_URL, url.toDisplayString(), "Choose a device at adb:/");
         }
         const QString argument = quote(path);
         QProcess process;
         process.setStandardInputFile(QProcess::nullDevice());
-        process.start("adb", {"shell", "-T", "test -f " + argument + " && cat " + argument});
+        process.start("adb", {"-s", serial, "shell", "-T", "test -f " + argument + " && cat " + argument});
         if (!process.waitForStarted(adbTimeout)) {
             return failure(KIO::ERR_CANNOT_READ, path, process.errorString());
         }
@@ -268,9 +343,10 @@ public:
     WorkerResult put(const QUrl &url, int permissions, KIO::JobFlags flags) override
     {
         qCDebug(adbLog) << "put" << url.path();
+        const QString serial = deviceSerial(url);
         const QString path = remotePath(url);
-        if (path.isEmpty() || path == "/") {
-            return failure(KIO::ERR_MALFORMED_URL, url.toDisplayString());
+        if (serial.isEmpty() || path.isEmpty() || path == "/") {
+            return failure(KIO::ERR_MALFORMED_URL, url.toDisplayString(), "Choose a device at adb:/");
         }
         if (flags & KIO::Resume) {
             return failure(KIO::ERR_UNSUPPORTED_ACTION, url.toDisplayString());
@@ -302,17 +378,13 @@ public:
     WorkerResult upload(const QUrl &url, int permissions, KIO::JobFlags flags,
                         const QString &source, KIO::filesize_t size)
     {
+        const QString serial = deviceSerial(url);
         const QString path = remotePath(url);
-        if (path.isEmpty() || path == "/") {
-            return failure(KIO::ERR_MALFORMED_URL, url.toDisplayString());
+        if (serial.isEmpty() || path.isEmpty() || path == "/") {
+            return failure(KIO::ERR_MALFORMED_URL, url.toDisplayString(), "Choose a device at adb:/");
         }
         if (flags & KIO::Resume) {
             return failure(KIO::ERR_UNSUPPORTED_ACTION, path);
-        }
-        const auto device = adb({"get-serialno"});
-        const QString serial = QString::fromUtf8(device.output).trimmed();
-        if (!device.ok || serial.isEmpty() || serial == "unknown") {
-            return failure(KIO::ERR_CANNOT_CONNECT, path, device.error);
         }
         const QString target = quote(path);
         const auto exists = shell("test -e " + target + " || test -L " + target, serial);
@@ -370,16 +442,17 @@ public:
     WorkerResult mkdir(const QUrl &url, int permissions) override
     {
         qCDebug(adbLog) << "mkdir" << url.path();
+        const QString serial = deviceSerial(url);
         const QString path = remotePath(url);
-        if (path.isEmpty()) {
-            return failure(KIO::ERR_MALFORMED_URL, url.toDisplayString());
+        if (serial.isEmpty() || path.isEmpty()) {
+            return failure(KIO::ERR_MALFORMED_URL, url.toDisplayString(), "Choose a device at adb:/");
         }
         const QString target = quote(path);
         const QString mode = permissions < 0 ? QString() : "-m " + QString::number(permissions & 0777, 8) + ' ';
         // Let mkdir decide whether creation succeeded, including concurrent creation.
         const auto result = shell("mkdir " + mode + target
             + " || { if [ -d " + target + " ]; then exit 19; fi; "
-              "if [ -e " + target + " ] || [ -L " + target + " ]; then exit 17; fi; exit 1; }");
+              "if [ -e " + target + " ] || [ -L " + target + " ]; then exit 17; fi; exit 1; }", serial);
         if (result.exitCode == 19) {
             return failure(KIO::ERR_DIR_ALREADY_EXIST, path);
         }
@@ -389,30 +462,75 @@ public:
     WorkerResult rename(const QUrl &from, const QUrl &to, KIO::JobFlags flags) override
     {
         qCDebug(adbLog) << "rename" << from.path() << "to" << to.path();
+        const QString serial = deviceSerial(from);
+        const QString destinationSerial = deviceSerial(to);
         const QString source = remotePath(from);
         const QString target = remotePath(to);
-        if (source.isEmpty() || target.isEmpty() || source == "/" || target == "/") {
+        if (serial.isEmpty() || destinationSerial.isEmpty() || source.isEmpty() || target.isEmpty() || source == "/" || target == "/") {
             return failure(KIO::ERR_MALFORMED_URL, from.toDisplayString());
         }
-        const auto result = shell(moveCommand(quote(source), quote(target), flags.testFlag(KIO::Overwrite)));
+        if (serial != destinationSerial) {
+            return WorkerResult::fail(KIO::ERR_UNSUPPORTED_ACTION, from.toDisplayString());
+        }
+        const auto result = shell(moveCommand(quote(source), quote(target), flags.testFlag(KIO::Overwrite)), serial);
         return moveResult(result, target, KIO::ERR_CANNOT_RENAME);
     }
 
     WorkerResult del(const QUrl &url, bool isFile) override
     {
         qCDebug(adbLog) << "del" << url.path();
+        const QString serial = deviceSerial(url);
         const QString path = remotePath(url);
-        if (path.isEmpty() || path == "/") {
-            return failure(KIO::ERR_MALFORMED_URL, url.toDisplayString());
+        if (serial.isEmpty() || path.isEmpty() || path == "/") {
+            return failure(KIO::ERR_MALFORMED_URL, url.toDisplayString(), "Choose a device at adb:/");
         }
         // A directory symlink can be advertised as a directory, but must be unlinked.
         const QString target = quote(path);
         const auto result = shell(isFile ? "rm " + target :
-            "if [ -L " + target + " ]; then rm " + target + "; else rmdir " + target + "; fi");
+            "if [ -L " + target + " ]; then rm " + target + "; else rmdir " + target + "; fi", serial);
         return result.ok ? WorkerResult::pass() : failure(KIO::ERR_CANNOT_DELETE, path, result.error);
     }
 
 private:
+    WorkerResult listDevices()
+    {
+        const auto result = adb({"devices", "-l"});
+        if (!result.ok) {
+            return failure(KIO::ERR_CANNOT_CONNECT, "adb:/", result.error);
+        }
+
+        static const QRegularExpression deviceLine(R"(^(\S+)\s+device(?:\s|$))");
+        static const QRegularExpression modelField(R"((?:^|\s)model:(\S+))");
+        QSet<QString> listed;
+        listEntry(directoryEntry("."));
+        for (const auto &line : result.output.split('\n')) {
+            const QString record = QString::fromUtf8(line.trimmed());
+            const auto match = deviceLine.match(record);
+            if (!match.hasMatch()) {
+                continue;
+            }
+            const QString serial = match.captured(1);
+            if (listed.contains(serial)) {
+                continue;
+            }
+            listed.insert(serial);
+            const QUrl target = deviceUrl(serial);
+            if (deviceSerial(target) != serial) {
+                qCWarning(adbLog) << "Cannot represent ADB device in a URL:" << serial;
+                continue;
+            }
+            QString model = modelField.match(record).captured(1);
+            model.replace('_', ' ');
+            auto entry = directoryEntry(target.authority());
+            entry.fastInsert(KIO::UDSEntry::UDS_DISPLAY_NAME,
+                             model.isEmpty() ? serial : model + " (" + serial + ')');
+            entry.fastInsert(KIO::UDSEntry::UDS_URL, target.toString(QUrl::FullyEncoded));
+            entry.fastInsert(KIO::UDSEntry::UDS_ICON_NAME, "phone");
+            listEntry(entry);
+        }
+        return WorkerResult::pass();
+    }
+
     static QString moveCommand(const QString &source, const QString &target, bool overwrite)
     {
         if (overwrite) {

@@ -1,6 +1,7 @@
 #include <KIO/CopyJob>
 #include <KIO/DeleteJob>
 #include <KIO/SimpleJob>
+#include <KIO/StatJob>
 #include <KIO/ListJob>
 #include <KIO/MkdirJob>
 
@@ -19,8 +20,41 @@ int main(int argc, char **argv)
     }
     const QString action = arguments[1];
     const QString name = arguments[2];
-    const QUrl directory("adb:/sdcard/");
+    const QUrl directory("adb://" + qEnvironmentVariable("KIO_ADB_TEST_SERIAL") + "/sdcard/");
     const QUrl remote = QUrl::fromEncoded(directory.toEncoded() + QUrl::toPercentEncoding(name));
+
+    if (action == "list-devices") {
+        const QByteArray mdnsHex = QByteArray("adb-AbC-XYZ._adb-tls-connect._tcp").toHex();
+        const QMap<QString, QUrl> expected{
+            {"mock", QUrl("adb://mock/sdcard/")},
+            {"192.0.2.12:5555", QUrl("adb://192.0.2.12:5555/sdcard/")},
+            {"adb-AbC-XYZ._adb-tls-connect._tcp",
+             QUrl("adb://id-" + QString::fromLatin1(mdnsHex.first(60) + '.' + mdnsHex.sliced(60)) + "/sdcard/")},
+        };
+        QMap<QString, QUrl> actual;
+        auto *job = KIO::listDir(QUrl("adb:/"), KIO::HideProgressInfo);
+        QObject::connect(job, &KIO::ListJob::entries, &application,
+                         [&](KIO::Job *, const KIO::UDSEntryList &entries) {
+            for (const auto &entry : entries) {
+                if (entry.stringValue(KIO::UDSEntry::UDS_NAME) != ".") {
+                    actual.insert(entry.stringValue(KIO::UDSEntry::UDS_DISPLAY_NAME),
+                                  QUrl(entry.stringValue(KIO::UDSEntry::UDS_URL)));
+                }
+            }
+        });
+        if (!job->exec() || actual != expected) {
+            qCritical() << job->errorString() << actual;
+            return 1;
+        }
+        for (auto url : actual) {
+            auto *stat = KIO::stat(url, KIO::HideProgressInfo);
+            if (!stat->exec() || !stat->statResult().isDir()) {
+                qCritical() << url << stat->errorString();
+                return 1;
+            }
+        }
+        return 0;
+    }
 
     const auto copy = [](const QUrl &from, const QUrl &to) {
         auto *job = KIO::copyAs(from, to, KIO::HideProgressInfo);
