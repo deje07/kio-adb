@@ -9,6 +9,7 @@
 #include <QDebug>
 #include <QFileInfo>
 #include <QMap>
+#include <sys/stat.h>
 
 int main(int argc, char **argv)
 {
@@ -22,6 +23,59 @@ int main(int argc, char **argv)
     const QString name = arguments[2];
     const QUrl directory("adb://" + qEnvironmentVariable("KIO_ADB_TEST_SERIAL") + "/sdcard/");
     const QUrl remote = QUrl::fromEncoded(directory.toEncoded() + QUrl::toPercentEncoding(name));
+
+    if (action == "symlinks") {
+        QUrl root("adb://mock");
+        root.setPath(arguments[3] + '/');
+        const QMap<QString, QString> targets{
+            {"file-link", "regular"}, {"directory-link", "directory"},
+            {"dangling-link", "absent"}, {"absolute-link", arguments[3] + "/regular"},
+            {"odd\nlink", "target\n\n"}, {"cycle-link", "cycle-link"},
+            {"regular", {}}, {"directory", {}}, {"target\n\n", {}},
+        };
+        const auto valid = [&](const QString &filename, const KIO::UDSEntry &entry) {
+            const QString target = targets.value(filename);
+            const auto type = filename == "directory" || filename == "directory-link" ? S_IFDIR
+                : filename == "dangling-link" || filename == "cycle-link" ? S_IFLNK : S_IFREG;
+            return entry.stringValue(KIO::UDSEntry::UDS_LINK_DEST) == target
+                && entry.isLink() == !target.isEmpty()
+                && entry.numberValue(KIO::UDSEntry::UDS_FILE_TYPE) == type
+                && (type != S_IFREG || entry.numberValue(KIO::UDSEntry::UDS_SIZE)
+                    == (filename == "odd\nlink" || filename == "target\n\n" ? 7 : 5));
+        };
+        QMap<QString, KIO::UDSEntry> actual;
+        auto *listing = KIO::listDir(root, KIO::HideProgressInfo);
+        QObject::connect(listing, &KIO::ListJob::entries, &application,
+                         [&](KIO::Job *, const KIO::UDSEntryList &entries) {
+            for (const auto &entry : entries) {
+                const QString filename = entry.stringValue(KIO::UDSEntry::UDS_NAME);
+                if (filename != "." && filename != "..") {
+                    actual.insert(filename, entry);
+                }
+            }
+        });
+        if (!listing->exec() || actual.keys() != targets.keys()) {
+            qCritical() << "Symlink listing failed:" << listing->errorString() << actual.keys();
+            return 1;
+        }
+        for (auto it = actual.cbegin(); it != actual.cend(); ++it) {
+            QUrl url = root;
+            url.setPath(root.path() + it.key());
+            auto *job = KIO::stat(url, KIO::HideProgressInfo);
+            if (!valid(it.key(), it.value()) || !job->exec() || !valid(it.key(), job->statResult())) {
+                qCritical() << "Incorrect symlink metadata:" << it.key() << job->errorString();
+                return 1;
+            }
+        }
+        QUrl alias = root;
+        alias.setPath(root.path() + "directory-link/");
+        auto *browse = KIO::listDir(alias, KIO::HideProgressInfo);
+        if (!browse->exec()) {
+            qCritical() << "Cannot browse directory symlink:" << browse->errorString();
+            return 1;
+        }
+        return 0;
+    }
 
     if (action == "list-devices") {
         const QByteArray mdnsHex = QByteArray("adb-AbC-XYZ._adb-tls-connect._tcp").toHex();

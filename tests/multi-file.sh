@@ -22,7 +22,7 @@ if [[ $MOCK_ADB_ACTION == list-devices ]]; then
             'unavailable unauthorized transport_id:4'
         exit 0
     fi
-    [[ $1 == -s && $3 == shell && $5 == "stat -L"* ]] || exit 1
+    [[ $1 == -s && $3 == shell && $5 == "(stat -L"* ]] || exit 1
     case "$2" in
         mock|192.0.2.12:5555|adb-AbC-XYZ._adb-tls-connect._tcp) ;;
         *) exit 1 ;;
@@ -34,9 +34,9 @@ shift 2
 case "$1" in
     shell)
         case "$3" in
-            "stat -L"*"/sdcard'"*) echo '41ff 4096 1700000000' ;;
-            "stat -L"*"/sdcard/first.txt'"*|"stat -L"*"/sdcard/second file.txt'"*)
-                echo '81b4 10 1700000000'
+            "(stat -L"*"/sdcard'"*) printf '41ff 4096 1700000000\000\000' ;;
+            "(stat -L"*"/sdcard/first.txt'"*|"(stat -L"*"/sdcard/second file.txt'"*)
+                printf '81b4 10 1700000000\000\000'
                 ;;
             "rm '/sdcard/first.txt'") rm -- "$MOCK_ADB_STORAGE/first.txt" ;;
             "rm '/sdcard/second file.txt'")

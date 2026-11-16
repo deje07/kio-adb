@@ -187,8 +187,12 @@ WorkerResult failure(int code, const QString &path, const QString &detail = {})
     return WorkerResult::fail(code, detail.isEmpty() ? path : path + '\n' + detail);
 }
 
-bool parseEntry(const QByteArray &metadata, const QString &name, KIO::UDSEntry &entry)
+bool parseEntry(const QByteArray &metadata, const QByteArray &link, const QString &name, KIO::UDSEntry &entry)
 {
+    const QString destination = QString::fromUtf8(link);
+    if (destination.toUtf8() != link) {
+        return false;
+    }
     const auto fields = metadata.trimmed().split(' ');
     if (fields.size() != 3) {
         return false;
@@ -205,12 +209,22 @@ bool parseEntry(const QByteArray &metadata, const QString &name, KIO::UDSEntry &
     entry.fastInsert(KIO::UDSEntry::UDS_ACCESS, mode & 0777);
     entry.fastInsert(KIO::UDSEntry::UDS_SIZE, size);
     entry.fastInsert(KIO::UDSEntry::UDS_MODIFICATION_TIME, modified);
+    if (!link.isEmpty()) {
+        entry.fastInsert(KIO::UDSEntry::UDS_LINK_DEST, destination);
+    }
     return true;
 }
 
 // Follow links when possible so Android's shared storage aliases can be browsed.
 const QString statCommand = "stat -L -c '%f %s %Y' ";
 const QString lstatCommand = "stat -c '%f %s %Y' ";
+
+QString linkCommand(const QString &argument)
+{
+    // Write directly: command substitution would strip trailing newlines from the target.
+    return "if [ -L " + argument + " ]; then readlink -n " + argument
+        + " || exit 1; fi; printf '\\000'; ";
+}
 
 class AdbWorker final : public KIO::WorkerBase
 {
@@ -232,24 +246,25 @@ public:
             return failure(KIO::ERR_MALFORMED_URL, url.toDisplayString(), "Choose a device at adb:/");
         }
 
-        // NUL-delimited names allow whitespace and newlines in filenames.
+        // NUL-delimited names, metadata, and link targets preserve whitespace and newlines.
         const auto result = shell("cd " + quote(path) + " && "
             "test -r . && test -x . && "
             "for file in . ./* ./.[!.]* ./..?*; do "
             "metadata=$(" + statCommand + "\"$file\" 2>/dev/null || "
             + lstatCommand + "\"$file\" 2>/dev/null) || continue; "
-            "printf '%s\\000%s\\000' \"${file#./}\" \"$metadata\"; done", serial);
+            "printf '%s\\000%s\\000' \"${file#./}\" \"$metadata\"; "
+            + linkCommand("\"$file\"") + "done", serial);
         if (!result.ok) {
             return failure(KIO::ERR_CANNOT_ENTER_DIRECTORY, path, result.error);
         }
         const auto records = result.output.split('\0');
-        if (records.size() % 2 != 1 || !records.last().isEmpty()) {
+        if (records.size() % 3 != 1 || !records.last().isEmpty()) {
             return failure(KIO::ERR_CANNOT_ENTER_DIRECTORY, path, "Invalid ADB directory listing");
         }
-        for (qsizetype index = 0; index + 1 < records.size(); index += 2) {
+        for (qsizetype index = 0; index + 2 < records.size(); index += 3) {
             const QString name = QString::fromUtf8(records[index]);
             KIO::UDSEntry entry;
-            if (name.toUtf8() == records[index] && parseEntry(records[index + 1], name, entry)) {
+            if (name.toUtf8() == records[index] && parseEntry(records[index + 1], records[index + 2], name, entry)) {
                 listEntry(entry);
             }
         }
@@ -269,9 +284,12 @@ public:
             return failure(KIO::ERR_MALFORMED_URL, url.toDisplayString(), "Choose a device at adb:/");
         }
         const QString argument = quote(path);
-        const auto result = shell(statCommand + argument + " 2>/dev/null || " + lstatCommand + argument, serial);
+        const auto result = shell("(" + statCommand + argument + " 2>/dev/null || "
+            + lstatCommand + argument + ") || exit 1; printf '\\000'; " + linkCommand(argument), serial);
+        const auto records = result.output.split('\0');
         KIO::UDSEntry entry;
-        if (!result.ok || !parseEntry(result.output, path == "/" ? "." : path.section('/', -1), entry)) {
+        if (!result.ok || records.size() != 3 || !records.last().isEmpty()
+            || !parseEntry(records[0], records[1], path == "/" ? "." : path.section('/', -1), entry)) {
             return failure(KIO::ERR_DOES_NOT_EXIST, path, result.error);
         }
         statEntry(entry);

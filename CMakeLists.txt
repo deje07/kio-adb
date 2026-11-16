@@ -24,6 +24,11 @@ if(KIO_ADB_EMULATOR_TEST)
     add_executable(adb-test-action tests/actions.cpp)
     target_link_libraries(adb-test-action PRIVATE Qt6::Core KF6::KIOCore)
     add_dependencies(adb-test-action kio_adb)
+    add_test(NAME adb-symlinks
+        COMMAND bash "${CMAKE_CURRENT_SOURCE_DIR}/tests/symlinks.sh"
+            "$<TARGET_FILE:adb-test-action>" "$<TARGET_FILE_DIR:kio_adb>/../.."
+    )
+    set_tests_properties(adb-symlinks PROPERTIES TIMEOUT 20)
     foreach(action IN ITEMS upload-multiple delete-multiple list-devices)
         add_test(NAME adb-${action}
             COMMAND bash "${CMAKE_CURRENT_SOURCE_DIR}/tests/multi-file.sh"
