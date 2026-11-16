@@ -50,6 +50,18 @@ case "$1" in
         esac
         ;;
     push)
+        if [[ $MOCK_ADB_ACTION == upload-stalled ]]; then
+            exec sleep 60
+        fi
+        if [[ $MOCK_ADB_ACTION == upload-active ]]; then
+            # Like ADB, the mock only reports live activity on a smart terminal.
+            for percent in 25 50; do
+                sleep 6
+                if [[ -t 1 && ${TERM:-dumb} != dumb ]]; then
+                    printf '\r[%3d%%] %s\033[K' "$percent" "$3"
+                fi
+            done
+        fi
         printf '[ 25%%] %s\r' "$3"
         # Give the CopyJob reporting timer time to publish partial progress.
         sleep 1
@@ -69,6 +81,14 @@ case "$3" in
         "$1" upload-multiple unused "$scratch/first.txt" "$scratch/second file.txt"
         cmp "$scratch/first.txt" "$MOCK_ADB_STORAGE/first.txt"
         cmp "$scratch/second file.txt" "$MOCK_ADB_STORAGE/second file.txt"
+        ;;
+    upload-active)
+        "$1" upload first.txt "$scratch/first.txt" unused
+        cmp "$scratch/first.txt" "$MOCK_ADB_STORAGE/first.txt"
+        ;;
+    upload-stalled)
+        "$1" upload-stalled first.txt "$scratch/first.txt" unused
+        [[ ! -e "$MOCK_ADB_STORAGE/first.txt" ]]
         ;;
     delete-multiple)
         cp -- "$scratch/first.txt" "$scratch/second file.txt" "$MOCK_ADB_STORAGE/"
