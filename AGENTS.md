@@ -5,7 +5,7 @@ This project is a KDE Frameworks 6 KIO worker that exposes Android devices over 
 ## Build and test
 
 ```sh
-cmake -S . -B build -DKIO_ADB_EMULATOR_TEST=ON
+cmake -S . -B build -DKIO_ADB_EMULATOR_TEST=ON -DCMAKE_EXPORT_COMPILE_COMMANDS=1
 cmake --build build --parallel
 ctest --test-dir build --output-on-failure -E '^adb-emulator-'
 ```

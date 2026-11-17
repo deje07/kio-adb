@@ -12,7 +12,7 @@ Browse and transfer files on connected Android devices from Dolphin and other KD
 
 ```sh
 sudo apt install build-essential cmake extra-cmake-modules qt6-base-dev libkf6kio-dev adb
-cmake -S . -B build -DCMAKE_BUILD_TYPE=Release -DCMAKE_INSTALL_PREFIX=/usr
+cmake -S . -B build -DCMAKE_BUILD_TYPE=Release -DCMAKE_INSTALL_PREFIX=/usr -DCMAKE_EXPORT_COMPILE_COMMANDS=1
 cmake --build build --parallel
 sudo cmake --install build
 ```
