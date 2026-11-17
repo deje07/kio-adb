@@ -110,27 +110,51 @@ int main(int argc, char **argv)
     if (action == "list-devices") {
         const QByteArray mdnsHex = QByteArray("adb-AbC-XYZ._adb-tls-connect._tcp").toHex();
         const QMap<QString, QUrl> expected{
+            {"rescue (recovery)", QUrl("adb://rescue/sdcard/")},
+            {"unavailable", QUrl("adb://unavailable/sdcard/")},
+            {"disconnected (offline)", QUrl("adb://disconnected/sdcard/")},
             {"mock", QUrl("adb://mock/sdcard/")},
             {"192.0.2.12:5555", QUrl("adb://192.0.2.12:5555/sdcard/")},
             {"adb-AbC-XYZ._adb-tls-connect._tcp",
              QUrl("adb://id-" + QString::fromLatin1(mdnsHex.first(60) + '.' + mdnsHex.sliced(60)) + "/sdcard/")},
         };
         QMap<QString, QUrl> actual;
+        QMap<QString, QString> overlays;
+        QMap<QString, QString> icons;
+        QMap<QString, bool> hidden;
         auto *job = KIO::listDir(QUrl("adb:/"), KIO::HideProgressInfo);
         QObject::connect(job, &KIO::ListJob::entries, &application,
                          [&](KIO::Job *, const KIO::UDSEntryList &entries) {
             for (const auto &entry : entries) {
                 if (entry.stringValue(KIO::UDSEntry::UDS_NAME) != ".") {
-                    actual.insert(entry.stringValue(KIO::UDSEntry::UDS_DISPLAY_NAME),
-                                  QUrl(entry.stringValue(KIO::UDSEntry::UDS_URL)));
+                    const QString name = entry.stringValue(KIO::UDSEntry::UDS_DISPLAY_NAME);
+                    actual.insert(name, QUrl(entry.stringValue(KIO::UDSEntry::UDS_URL)));
+                    icons.insert(name, entry.stringValue(KIO::UDSEntry::UDS_ICON_NAME));
+                    hidden.insert(name, entry.numberValue(KIO::UDSEntry::UDS_HIDDEN, 0) == 1);
+                    const QString overlay = entry.stringValue(KIO::UDSEntry::UDS_ICON_OVERLAY_NAMES);
+                    if (!overlay.isEmpty()) {
+                        overlays.insert(name, overlay);
+                    }
                 }
             }
         });
-        if (!job->exec() || actual != expected) {
-            qCritical() << job->errorString() << actual;
+        if (!job->exec() || actual != expected || !overlays.isEmpty()) {
+            qCritical() << job->errorString() << actual << overlays;
             return 1;
         }
-        for (auto url : actual) {
+        for (const auto &name : expected.keys()) {
+            if (icons.value(name) != "phone") {
+                qCritical() << "Incorrect device icon:" << name << icons.value(name);
+                return 1;
+            }
+            if (hidden.value(name) != (name == "disconnected (offline)")) {
+                qCritical() << "Incorrect device visibility:" << name << hidden.value(name);
+                return 1;
+            }
+        }
+        for (const auto *name : {"mock", "rescue (recovery)", "192.0.2.12:5555",
+                                 "adb-AbC-XYZ._adb-tls-connect._tcp"}) {
+            const auto url = actual.value(name);
             auto *stat = KIO::stat(url, KIO::HideProgressInfo);
             if (!stat->exec() || !stat->statResult().isDir()) {
                 qCritical() << url << stat->errorString();

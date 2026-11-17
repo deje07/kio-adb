@@ -633,7 +633,7 @@ private:
             return failure(KIO::ERR_CANNOT_CONNECT, "adb:/", result.error);
         }
 
-        static const QRegularExpression deviceLine(R"(^(\S+)\s+device(?:\s|$))");
+        static const QRegularExpression deviceLine(R"(^(\S+)\s+(device|recovery|unauthorized|offline)(?:\s|$))");
         static const QRegularExpression modelField(R"((?:^|\s)model:(\S+))");
         QSet<QString> listed;
         listEntry(directoryEntry("."));
@@ -657,10 +657,23 @@ private:
             QString model = modelField.match(record).captured(1);
             model.replace('_', ' ');
             auto entry = directoryEntry(target.authority());
-            entry.fastInsert(KIO::UDSEntry::UDS_DISPLAY_NAME,
-                             model.isEmpty() ? serial : model + " (" + serial + ')');
+            auto state = match.captured(2);
+
+            auto displayName = model.isEmpty() ? serial : model + " (" + serial + ')';
+            if (state == "offline") {
+                displayName += " (offline)";
+            } else if (state == "recovery") {
+                displayName += " (recovery)";
+            }
+
+            entry.fastInsert(KIO::UDSEntry::UDS_DISPLAY_NAME, displayName);
             entry.fastInsert(KIO::UDSEntry::UDS_URL, target.toString(QUrl::FullyEncoded));
             entry.fastInsert(KIO::UDSEntry::UDS_ICON_NAME, "phone");
+
+            if (state == "offline") {
+                entry.fastInsert(KIO::UDSEntry::UDS_HIDDEN, 1);
+            }
+
             listEntry(entry);
         }
         return WorkerResult::pass();

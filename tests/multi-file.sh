@@ -19,12 +19,14 @@ if [[ $MOCK_ADB_ACTION == list-devices ]]; then
             'mock device transport_id:1' \
             '192.0.2.12:5555 device transport_id:2' \
             'adb-AbC-XYZ._adb-tls-connect._tcp device transport_id:3' \
-            'unavailable unauthorized transport_id:4'
+            'unavailable unauthorized transport_id:4' \
+            'rescue recovery transport_id:5' \
+            'disconnected offline transport_id:6'
         exit 0
     fi
     [[ $1 == -s && $3 == shell && $5 == "(stat -L"* ]] || exit 1
     case "$2" in
-        mock|192.0.2.12:5555|adb-AbC-XYZ._adb-tls-connect._tcp) ;;
+        mock|rescue|192.0.2.12:5555|adb-AbC-XYZ._adb-tls-connect._tcp) ;;
         *) exit 1 ;;
     esac
 else
