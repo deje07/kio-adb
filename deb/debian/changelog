@@ -1,3 +1,12 @@
+kio-adb (0.5.0) resolute; urgency=medium
+
+  * Fix upload timeouts by reading ADB progress from stderr and allowing
+    longer gaps between progress updates.
+  * Show devices in recovery and report unavailable devices in listings.
+  * Document how to generate the compilation database for clangd.
+
+ -- Gabor Szecsi <deje07@gmail.com>  Tue, 17 Nov 2026 11:02:49 +0100
+
 kio-adb (0.4.0) resolute; urgency=medium
 
   * Batch directory metadata reads to reduce process launches.
